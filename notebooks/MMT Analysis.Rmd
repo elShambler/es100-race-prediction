@@ -1,0 +1,412 @@
+---
+title: "Comtech Treated Summary"
+author: "Tom�s Castillo"
+date: "11/9/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+library(tidyverse)
+library(viridis)
+library(scales)
+library(animation)
+library(ggthemes)
+library(extrafont)
+library(extrafontdb)
+library(ggridges)
+
+mmt_data <- read.csv("data/MMT_Finishers.csv", stringsAsFactors = FALSE)
+```
+
+```{r formatting}
+mmt_data <- mmt_data %>% 
+  separate(Time, c("HR", "MIN", "SEC"), sep = ":", remove = FALSE) %>% 
+  mutate(HR = as.numeric(HR),
+         MIN = as.numeric(MIN),
+         SEC = as.numeric(SEC),
+         time_elapsed = HR*60 + MIN + SEC/60) %>% 
+  group_by(Year) %>% 
+  arrange(time_elapsed) %>% 
+  mutate(rank = rank(time_elapsed, ties.method = "random")) %>%  # Ties-method initially "min"
+  ungroup()
+
+col_2 <- c("#42CAB3", "#546986")
+col_3 <- c("#8bc0dd", "#714e98")
+col_pal <- c("#361B25","#503F57","#516D89","#3A9FA9","#4DD0AC","#A1FC97")
+fnCol_pal <- colorRampPalette(col_pal)
+
+## use similar color palette but generate for 
+```
+
+```{r eda plots, warning = FALSE}
+mmt_data %>% mutate(Sex = as.factor(Sex)) %>% 
+  ggplot(aes(x = time_elapsed/60, fill = Sex)) +
+  geom_histogram(binwidth = 2) +
+  scale_x_continuous(breaks = seq(12, 38, 2),
+                     labels = seq(12, 38, 2)) +
+  scale_y_continuous(breaks = seq(0,600, 100),
+                     labels = seq(0, 600, 100),
+                     limits = c(0, 600)) +
+  labs(x = "FINISH TIME (HOURS)",
+       y = "NO. OF FINISHERS",
+       title = "MMT FINISHERS") +
+  scale_fill_manual(values = col_2) +
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+      axis.title = element_text(face = "bold", size = 10),
+      plot.title = element_text(face = "bold", size = 12),
+      plot.subtitle = element_text(face = "plain", size = 11),
+      axis.title.y = element_text(),
+      axis.text.y = element_text(size = 9),
+      panel.grid.major.y = element_line("light grey"),
+      panel.background = element_rect(fill = "dark grey"),
+      axis.text.x = element_text(size = 9))
+  
+
+ggplot(mmt_data, 
+       aes(x = rank, y = time_elapsed/60, 
+           group = factor(Year), col = Year)) +
+  geom_point() +
+  scale_y_continuous(breaks = seq(12, 38, 2),
+                     labels = seq(12, 38, 2)) +
+  scale_x_continuous(breaks = seq(0, 160, 10),
+                     labels = seq(0, 160, 10)) +
+  scale_color_gradientn(colors = c("#361B25","#503F57","#516D89","#3A9FA9","#4DD0AC","#A1FC97")) +
+  labs(x = "FINISHING PLACE",
+       y = "FINISH TIME (HOURS)",
+       title = "MMT FINISH TIME OVER THE YEARS") +
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+      axis.title = element_text(face = "bold", size = 10),
+      plot.title = element_text(face = "bold", size = 12),
+      plot.subtitle = element_text(face = "plain", size = 11),
+      axis.title.y = element_text(),
+      axis.text.y = element_text(size = 9),
+      panel.grid.major.y = element_line("light grey"),
+      panel.background = element_rect(fill = "dark grey"),
+      axis.text.x = element_text(size = 9),
+      legend.position = "right",
+      legend.direction = "vertical",
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 8))
+
+
+```
+
+```{r year summary, warning = FALSE}
+ggplot(mmt_data %>% count(Year, Sex) %>% 
+         mutate(pct = n / sum(n), 
+                ypos = cumsum(n - 0.5*n)), 
+       aes(x = factor(Year, sort(unique(Year), decreasing = TRUE)), 
+                      y = n, fill = Sex)) + 
+  geom_bar(stat = 'identity', color = "white") +
+  scale_fill_manual(values = col_2) +
+  scale_x_discrete(breaks = seq(1995, 2018, 2),
+                   labels = seq(1995, 2018, 2)) +
+  labs(x = "YEAR OF RACE",
+       y = "NO. OF FINISHERS",
+       title = "MMT FINISH TIME OVER THE YEARS") +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+      axis.title = element_text(face = "bold", size = 10),
+      plot.title = element_text(face = "bold", size = 12),
+      plot.subtitle = element_text(face = "plain", size = 11),
+      axis.title.y = element_text(),
+      axis.text.y = element_text(size = 9),
+      panel.grid.major.y = element_line("light grey"),
+      panel.background = element_rect(fill = "dark grey"),
+      axis.text.x = element_text(size = 9),
+      legend.position = "right",
+      legend.direction = "vertical",
+      legend.title = element_text(size = 10),
+      legend.text = element_text(size = 8))
+  
+sex_breakdown <- mmt_data %>% 
+  group_by(Year, Sex) %>% 
+  summarise(count = n()) %>% 
+  spread(key = Sex, value = count) %>% 
+  mutate(F.perc = F/(F+M), M.perc = M/(F+M)) %>% 
+  ungroup()
+
+ggplot(sex_breakdown, aes(y = F.perc, x = factor(Year))) + 
+  geom_bar(stat = 'identity', color = 'light grey')+scale_fill_manual(values = col_3)+
+  scale_x_discrete(breaks = seq(1995, 2018, 2),
+                   labels = seq(1995, 2018, 2)) +
+  labs(x = "YEAR OF RACE", y = "PERCENTAGE OF FEMALE FINISHERS",
+       title = "MMT FEMALE FINISHERS BY YEAR") +
+  coord_flip() +
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+      axis.title = element_text(face = "bold", size = 12),
+      plot.title = element_text(face = "bold", size = 13),
+      plot.subtitle = element_text(face = "plain", size = 12),
+      axis.title.y = element_text(),
+      axis.text.y = element_text(size = 10),
+      panel.grid.major.y = element_line("light grey"),
+      panel.background = element_rect(fill = "dark grey"),
+      axis.text.x = element_text(size = 11),
+      legend.position = "right",
+      legend.direction = "vertical",
+      legend.title = element_text(size = 11),
+      legend.text = element_text(size = 10))
+  
+```
+
+```{r ridgeline distribution}
+mmt_data_ord <- mmt_data %>%
+  mutate(Year = factor(Year, 
+                sort(unique(Year), decreasing = TRUE))) %>% 
+  arrange(Year, rank)
+
+col_pal_years <- fnCol_pal(24)
+ggplot(mmt_data_ord,
+       aes(y = Year, x = time_elapsed/60, fill = Year, color = Year)) +
+  geom_density_ridges(alpha = 0.6, bandwidth = 4) +
+  scale_fill_manual(values = col_pal_years) +
+  scale_color_manual(values = col_pal_years) +
+  labs(y = "",
+       x = "TIME TO FINISH (HRS)") +
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+      axis.title = element_text(face = "bold", size = 10),
+      plot.title = element_text(face = "bold", size = 12),
+      plot.subtitle = element_text(face = "plain", size = 11),
+      axis.title.y = element_text(),
+      axis.text.y = element_text(size = 9),
+      panel.grid.major.y = element_line("light grey"),
+      panel.background = element_rect(fill = "dark grey"),
+      axis.text.x = element_text(size = 9),
+      legend.position = "none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8))
+
+ggplot(mmt_data_ord, aes(x = time_elapsed/60, color = Year, fill = Year)) +
+  geom_density(alpha = 0.8) +
+  scale_fill_manual(values = col_pal_years) +
+  scale_color_manual(values = col_pal_years) +
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+    axis.title = element_text(face = "bold", size = 10),
+    plot.title = element_text(face = "bold", size = 12),
+    plot.subtitle = element_text(face = "plain", size = 11),
+    axis.title.y = element_text(),
+    axis.text.y = element_text(size = 9),
+    panel.grid.major.y = element_line("light grey"),
+    panel.background = element_rect(fill = "dark grey"),
+    axis.text.x = element_text(size = 9),
+    legend.position = "none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)) +
+  facet_wrap(~Year)
+
+
+ggplot(mmt_data_ord,
+       aes(x = Year, y = time_elapsed/60, fill = Year)) +
+  geom_boxplot(color = "light grey") +
+  geom_jitter(color = "grey", alpha = 0.3, size = 0.9) +
+  scale_fill_manual(values = col_pal_years) +
+  labs(x = "YEAR",
+       y = "FINISH TIME (HOURS)",
+       title = "BOXPLOT DISTRIBUTION OF MMT FINISHERS") +
+  scale_y_continuous(breaks = seq(16, 38, 2),
+                     labels = seq(16, 38, 2)) + 
+  theme_fivethirtyeight() +
+  theme(text = element_text(family = "Roboto"),
+    axis.title = element_text(face = "bold", size = 11),
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(face = "plain", size = 12),
+    axis.title.y = element_text(),
+    axis.text.y = element_text(size = 11),
+    panel.grid.major.y = element_line("light grey"),
+    panel.background = element_rect(fill = "dark grey"),
+    axis.text.x = element_text(size = 10),
+    legend.position = "none") +
+  coord_flip()
+  
+```
+
+```{r year dataset}
+year_ordered <- mmt_data_ord %>% 
+  arrange(Year, rank) %>% 
+  mutate(time_elapsed = time_elapsed/60) %>% 
+  select(rank, Year, time_elapsed) %>% 
+  spread(key = "Year", value = time_elapsed, fill = 0) %>% 
+  select(-rank)
+
+# We'll make another dataframe of the yearly averages so we can rank them from fastest to slowest (by average time to complete)
+ranked_years <- mmt_data_ord %>% 
+  arrange(Year, rank) %>% mutate(time_elapsed = time_elapsed/60) %>% 
+  select(rank, Year, time_elapsed) %>% 
+  group_by(Year) %>%
+  summarise(year_avg = mean(time_elapsed))
+
+year_ord <- rank(ranked_years$year_avg)
+
+year_ordered.o <- year_ordered[, order(year_ord)]
+  
+
+year_time_avg <- mmt_data_ord %>% 
+  group_by(Year) %>% 
+  summarise(avg = mean(time_elapsed/60))
+
+splits <- quantile(year_time_avg$avg, probs = seq(0 , 1, 0.2))
+ridge_cols <- fnCol_pal(6)
+```
+
+
+```{r testing out NathanYau script}
+## The following plot is another ridgeline plot but using base R
+## It is inspired by a recent post from Nathan Yau on FlowingData
+## URL --> https://flowingdata.com/2018/11/02/how-to-make-frequency-trails-in-r/
+
+# Initialize parameters
+num_plots <- dim(year_ordered.o)[2]
+max_overlap <- 10
+overlap <- 4
+initheight <- 1 / (num_plots + max_overlap)
+max_all <- max(year_ordered.o)
+
+
+# Begin plotting - plot region first
+par(mar = c(0, 0, 0, 0), bg = "white")
+plot(0:1, 0:1, type = "n", xlab = "", ylab = "", axes = FALSE, asp = 1)
+i <- 1
+
+#len <- 155 # Maximum number of racers per year
+
+for (i in num_plots:1) {
+  x_val <- year_ordered.o[, i]
+  x_mean <- mean(as.matrix(x_val[x_val[1] > 0, 1]))
+  x_lab <- colnames(year_ordered.o)[i]
+  
+  # Plotting
+  par(new = TRUE, plt=c(0, 1, initheight*(i-1), initheight*(i-1)+initheight*overlap) )
+  
+  plot(x_val, xlim = c(0, 250),
+       ylim = c(0, max_all),
+       xlab = "", ylab = "", type = "n", axes = FALSE)
+  
+  colIndex <- which(x_mean <= splits)[1]
+  
+  polygon(c(1:151, 151:1), 
+          c(as.matrix(year_ordered.o[,i]), rep(0, 151)), 
+          col = ridge_cols[colIndex], border = NA)
+  
+  lines(x_val, lwd = 0.8, col = "black")
+  
+  text(154, max(x_val)/(overlap + 2), x_lab, pos = 4, cex = 0.7)
+}
+
+
+```
+
+```{r gif animation}
+## Now we will explore making an animation based on finish times
+## This will again be using Flowing Data, but this time a different tutorial - Animated Line Chart
+## https://flowingdata.com/2017/07/17/how-to-make-animated-line-charts-in-r/
+
+## Let's begin
+max_lwd <- 3
+ymax <- 0.13
+mmt.o <- mmt_data_ord %>% 
+  mutate(Year = as.numeric(as.character(Year))) %>% 
+  arrange(Year, rank)
+
+years <- sort(unique(mmt.o$Year))
+yaxis <- seq(0, 0.14, 0.02)
+
+par(font.main = 2, family = "Roboto", cex.main = 1.0, cex.axis = 0.8, cex.lab = 0.8, las = 1)
+plot(0, 0, type = 'n', xlim = c(16, 38), ylim = c(0, ymax), main = "TIME ELAPSED HISTOGRAM",
+     xlab = "HOURS", ylab = "", yaxt = "n", xaxt = "n")
+curr <- mmt.o[mmt.o$Year <= 2018, ]
+years_to_draw <- years[years <= 2018]
+
+
+for (i in 1:length(years_to_draw)) {
+  curr_year <- curr[curr$Year == years_to_draw[i], ]
+
+  if (i == length(years_to_draw)) {
+    col <- "#363b74"
+    lwd <- max_lwd
+    mLine <- median(curr_year$time_elapsed/60)
+    abline(v = mLine, col = "light grey", lwd = 1.5)
+    #rect(mLine.min, 0, mLine.max, ymax, col = "light grey", border = "dark grey", alpha = 0.5)
+  } else {
+    col <- "#aeb0c7"
+    lwd <- max_lwd * 1 / ((length(years_to_draw) - i + 0.5)^1.5)
+  }
+
+  lines(density(curr_year$time_elapsed/60), col = col, lwd = lwd)
+  axis(2, at = pretty(yaxis), lab = percent(yaxis), tick = TRUE, tcl = -0.2)
+  axis(1, at = seq(16, 38, 2), tick = TRUE, tcl = -0.4)
+  abline(NULL, NULL, lty = 3, col = "#c1c1c1", lwd = 1, h = yaxis)
+
+
+}
+
+saveGIF({
+   par(las = 1, mar = c(4, 3, 2, 2), font.main = 2, family = "Roboto", 
+       cex.main = 1.0, cex.axis = 0.8, cex.lab = 0.8)
+
+
+   for (y in years) {
+
+
+#     plot(0, 0, type = "n", xlim = c(0, 180), ylim = c(16, 38), main = paste("TIME ELAPSED - ", y),
+#          xlab = "", ylab = "")
+      plot(0, 0, type = 'n', xlim = c(16, 38), ylim = c(0, ymax), main = paste("TIME ELAPSED - ", y),
+           xlab = "HOURS", ylab = "", yaxt = "n", xaxt = "n")
+
+     # Gets data to draw for all data that is on or prior to current year
+     curr <- mmt.o[mmt.o$Year <= y, ]
+
+     # Determine how many years to draw
+     years_to_draw <- years[years <= y]
+
+     for (i in 1:length(years_to_draw)) {
+       curr_year <- curr[curr$Year == years_to_draw[i], ]
+
+       if (i == length(years_to_draw)) {
+         col <- "#363b74"
+         lwd <- max_lwd
+         mLine <- median(curr_year$time_elapsed/60)
+         abline(v = mLine, col = "light grey", lwd = 1.2)
+       } else {
+         col <- "#aeb0c7"
+
+         # Because we are starting with 2018 and going back in time, instead of starting old and getting newer
+         # I switched the formula around
+
+         ## If the order of the list goes from NEW --> OLD, use EQ1
+         ## If the order of the list goes from OLD --> NEW, use EQ2
+
+         ## EQ1
+         #lwd <- max_lwd * exp(log(0.7) * i)
+         #print(lwd)
+
+         ## EQ2
+         lwd <- max_lwd * 1 / ((length(years_to_draw) - i + 0.5)^1.5)
+       }
+       #lines(curr_year$rank, curr_year$time_elapsed/60, col = col, lwd = lwd)
+        lines(density(curr_year$time_elapsed/60), col = col, lwd = lwd)
+        axis(2, at = pretty(yaxis), lab = percent(yaxis), tick = TRUE, tcl = -0.2)
+        axis(1, at = seq(16, 38, 2), tick = TRUE, tcl = -0.4)
+        abline(NULL, NULL, lty = 3, col = "#c1c1c1", lwd = 1, h = yaxis)
+     }
+   }
+}, movie.name = "Massanutten-Finish-Time_allYears(1995-2018).gif",
+interval = 0.1, nmax = 100, ani.width = 720, ani.height = 500)
+
+```
+
+```{r animated gender pyramid}
+# First we'll break add a column to break down age groups
+age_group <- seq(10, 100, 10)
+mmt_data$age_group <- findInterval(mmt_data$Age, age_group)
+
+## For now, we'll practice in D3 but export the data as csv
+#write.csv(mmt_data, "data/output/mmt_data.processed.csv")
+```
