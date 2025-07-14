@@ -1,5 +1,17 @@
 import polars as pl
 from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
+import numpy as np
+
+df = pl.read_excel("data/01_raw/ES2016-2017.xlsx",
+    sheet_name="summary", schema_overrides={
+    "as_check_in__tod": pl.String,
+    "as_check_in__elapsed": pl.String,
+    "as_check_out__tod": pl.String,
+    "as_check_out__elapsed": pl.String,
+})
+
+
 
 def process_check_in_times(df: pl.DataFrame) -> pl.DataFrame:
     """
@@ -32,7 +44,7 @@ def process_check_in_times(df: pl.DataFrame) -> pl.DataFrame:
     # Combine base date with time component
     result = result.with_columns([
         (pl.col("base_date") + " " + pl.col("time_component"))
-        .str.strptime(pl.Datetime, fmt="%Y-%m-%d %H:%M:%S")
+        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
         .alias("check_in_datetime")
     ])
     
@@ -57,9 +69,38 @@ def process_check_in_times(df: pl.DataFrame) -> pl.DataFrame:
     result = result.with_columns([
         # Calculate time difference in seconds
         (pl.col("check_in_datetime") - pl.col("prev_datetime"))
-        .dt.seconds()
+        .dt.total_seconds()
         .alias("time_diff_seconds")
     ])
+    
+    # Debug: Check time_diff_seconds column for a random bib
+    # Filter out null values and get a random bib
+    non_null_data = result.filter(pl.col("time_diff_seconds").is_not_null())
+    
+    if len(non_null_data) > 0:
+        # Get a random bib from the data
+        random_bib = non_null_data.select("bib").unique().sample(1).item()
+        
+        # Filter data for this specific bib
+        bib_data = non_null_data.filter(pl.col("bib") == random_bib)
+        
+        # Create the plot
+        plt.figure(figsize=(12, 6))
+        plt.plot(bib_data.select("as_index").to_series(), 
+                bib_data.select("time_diff_seconds").to_series(), 
+                'o-', linewidth=2, markersize=6)
+        plt.title(f'Time Difference Between Check-ins for Bib {random_bib}')
+        plt.xlabel('Check-in Time')
+        plt.ylabel('Time Difference (seconds)')
+        plt.xticks(rotation=45)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+        
+        # Also print some statistics
+        print(f"Debug info for bib {random_bib}:")
+        print(f"Number of check-ins: {len(bib_data)}")
+        print(f"Time differences: {bib_data.select('time_diff_seconds').to_series().to_list()}")
     
     # Apply day adjustment logic
     result = result.with_columns([

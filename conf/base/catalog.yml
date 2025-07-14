@@ -19,8 +19,8 @@ es_splits_2023:
     sheet_name: 'rollup'
 
 es_splits_ultralive:
-  type: polars.ExcelDataset
-  filepath:'data/01_raw/ES2016-2017.xlsx'
+  type: polars.LazyPolarsDataset
+  filepath: data/01_raw/ES2016-2017.xlsx
   load_args:
     sheet_name: 'summary'
     schema_overrides:
@@ -30,14 +30,14 @@ es_splits_ultralive:
       as_check_out__elapsed: ${polars.String}
 
 es_asinfo_historical:
-  type: polars.ExcelDataset
-  filepath:'data/01_raw/ES2016-2017.xlsx'
+  type: polars.LazyPolarsDataset
+  filepath: data/01_raw/ES2016-2017.xlsx
   load_args:
     sheet_name: 'as_info'
 
 es_finish_historical:
-  type: polars.ExcelDataset
-  filepath:'data/01_raw/ES2016-2017.xlsx'
+  type: polars.LazyPolarsDataset
+  filepath: data/01_raw/ES2016-2017.xlsx
   load_args:
     sheet_name: 'es_finish'
 
