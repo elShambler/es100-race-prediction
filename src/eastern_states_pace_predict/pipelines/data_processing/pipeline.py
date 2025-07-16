@@ -6,7 +6,7 @@ def create_pipeline(**kwargs) -> Pipeline:
         [
             node(
                 func=preprocess_20162017_data,
-                inputs="es_splits_ultralive",
+                inputs="es_process_20167",
                 outputs="preprocessed_ultralive",
                 name="preprocess_ultralive_node",
             ),

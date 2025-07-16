@@ -28,7 +28,7 @@ def add_race_date(
     """
 
     # Check if column exists:
-    if year_col not in df.column:
+    if year_col not in df.columns:
         raise ValueError(f'Column "{year_col}" not found in dataframe.')
 
     # Check for valid year values
@@ -96,7 +96,7 @@ def preprocess_20162017_data(df: pl.DataFrame):
 
         return df
 
-    except:
+    except Exception as e:
         logger.error(f"Error during preprocessing: {str(e)}")
         raise
 
