@@ -34,3 +34,8 @@ es_asinfo_historical:
 es_finish_historical:
   type: polars.CSVDataset
   filepath: data/01_raw/ES100_2016-2017_finish.csv
+
+es_processed_20162017:
+  type: polars.LazyPolarsDataset
+  filepath: data/02_intermediate/es_20162017_processed.pq
+  file_format: parquet
