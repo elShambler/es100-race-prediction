@@ -64,6 +64,51 @@ def add_race_date(
 
     return result_df
 
+def add_check_in_out__tod(
+    df: pl.DataFrame,
+    as_checkpoint_col: str,
+    date_col: str="race_date",
+) -> pl.DataFrame:
+    """
+    Converts the time-of-day with correct date and time,
+    based on the previously added race_date.
+    This function can be applied for both:
+        - as_check_in__tod
+        - as_check_out__tod
+
+    Args:
+        df: DataFrame containing all split information
+        as_checkpoint_col: Specify which column (check in or check out)
+        date_col: expected value -race_date
+
+    Returns:
+        Dataframe with processed time of day into a datetime object
+    """
+
+    #TODO: Determine if the time object contains date too (error handling required)
+    # First extract the time component of the time of day
+    result_df = df.with_columns([
+        pl.col(as_checkpoint_col)
+        .alias(f"{as_checkpoint_col}_time")
+    ])
+
+    # This converts the time-of-day value into datetime
+    result_df = result_df.with_columns([
+        (pl.col(date_col) + " " + pl.col(f"{as_checkpoint_col}_time"))
+        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
+        .alias(f"{as_checkpoint_col}_datetime")
+    ])
+
+    # Convert the missing values to datetime as well
+    result_df = result_df.with_columns(
+        pl.when(pl.col(f"{as_checkpoint_col}_datetime").is_null())
+        .then((
+            pl.col(date_col).str.strptime(pl.Date)
+        ))
+    )
+
+    return result_df
+
 def preprocess_20162017_data(df: pl.DataFrame):
     """
     2016-2017 data scraped from UltraLive and contains only time-in
@@ -88,6 +133,12 @@ def preprocess_20162017_data(df: pl.DataFrame):
         # Step 1: Add race date based on year
         logger.info("Adding race date column...")
         df = add_race_date(df, year_col="year")
+        logger.info("Adding check-in datetime")
+        df = add_check_in_out__tod(
+            df=df,
+            as_checkpoint_col="as_check_in__tod",
+            date_col="race_date"
+        )
         
         # Log successful modification
         logger.info(f"Successfully preprocessed data. Final shape: {df.shape[0]} rows and {df.shape[1]} columns")
