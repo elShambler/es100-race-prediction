@@ -1,4 +1,5 @@
 from kedro.pipeline import Pipeline, node, pipeline
+
 from .nodes import preprocess_20162017_data
 
 def create_pipeline(**kwargs) -> Pipeline:
@@ -6,8 +7,8 @@ def create_pipeline(**kwargs) -> Pipeline:
         [
             node(
                 func=preprocess_20162017_data,
-                inputs="es_process_20167",
-                outputs="preprocessed_ultralive",
+                inputs="es_splits_20167",
+                outputs="es_processed_20162017",
                 name="preprocess_ultralive_node",
             ),
         ]
