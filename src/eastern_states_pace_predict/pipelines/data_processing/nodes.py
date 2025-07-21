@@ -99,11 +99,50 @@ def add_check_in_out__tod(
         .alias(f"{as_checkpoint_col}_datetime")
     ])
 
+    return result_df
+
+def convert_elapsed_tod(
+    df: pl.DataFrame,
+    as_checkpoint_col: str,
+    date_col: str="race_date",
+) -> pl.DataFrame:
+    """
+    Converts the elapsed time of a split value into datetime
+    based on the start date of the race and a 05:00 start.
+
+    This function can be applied for both:
+    - as_check_in__elapsed
+    - as_check_out__elapsed
+
+    Args:
+    - df: DataFrame containing all split information
+    - as_checkpoint_col: specify if checking in or out
+    - date_col: contains the date of the race
+
+    Returns:
+    - Dataframe with elapsed time turned into datetime since the start
+    """
+    # Determine aid station check type (in or out)
+    if "check_in" in as_checkpoint_col:
+        as_tod = "as_check_in__tod"
+        as_elap = "as_check_in__elapsed"
+        as_dt = "as_check_in__tod_datetime"
+    else:
+        as_tod = "as_check_out__tod"
+        as_elap = "as_check_out__elapsed"
+        as_dt = "as_check_out__tod_datetime"
+
+
     # Convert the missing values to datetime as well
     result_df = result_df.with_columns(
-        pl.when(pl.col(f"{as_checkpoint_col}_datetime").is_null())
+        pl.when(pl.col(as_dt).is_null())
         .then((
-            pl.col(date_col).str.strptime(pl.Date)
+            pl.col(date_col).str.strptime(pl.Date) +
+            pl.duration(
+                    hours=pl.col(as_elap).str.split(":").list.get(0).cast(pl.Int32),
+                    minutes=pl.col(as_elap).str.split(":").list.get(1).cast(pl.Int32),
+                    seconds=pl.col(as_elap).str.split(":").list.get(2).cast(pl.Float32)
+                )
         ))
     )
 
