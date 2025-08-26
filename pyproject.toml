@@ -11,7 +11,7 @@ dependencies = [
     "ipython>=8.10",
     "jupyterlab>=3.0",
     "notebook",
-    "kedro[jupyter]~=0.19.3",
+    "kedro[jupyter]==1.0",
     "kedro-datasets[pandas-csvdataset, pandas-exceldataset, pandas-parquetdataset, plotly-plotlydataset, plotly-jsondataset, matplotlib-matplotlibwriter]>=3.0",
     "kedro-viz>=6.7.0",
     "scikit-learn~=1.5.1",
@@ -58,7 +58,7 @@ namespaces = false
 [tool.kedro]
 package_name = "eastern_states_pace_predict"
 project_name = "eastern-states-pace-predict"
-kedro_init_version = "0.19.3"
+kedro_init_version = "1.0.0"
 tools = "['Linting', 'Testing', 'Custom Logging', 'Documentation', 'Data Structure', 'Kedro Viz']"
 example_pipeline = "False"
 source_dir = "src"
