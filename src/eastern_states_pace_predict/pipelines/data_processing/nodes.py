@@ -7,10 +7,8 @@ logger = logging.getLogger(__name__)
 
 # Load in our main datasets defined in catalog.yml
 
-def add_race_date(
-    df: pl.DataFrame,
-    year_col: str="year"
-) -> pl.DataFrame:
+
+def add_race_date(df: pl.DataFrame, year_col: str = "year") -> pl.DataFrame:
     """
     Add race_date column based on the year
 
@@ -38,9 +36,11 @@ def add_race_date(
     # Check for null values in year column
     null_count = df[year_col].null_count()
     if null_count > 0:
-        logger.warning(f"Found {null_count} null values in '{year_col}'. These will be discarede")
+        logger.warning(
+            f"Found {null_count} null values in '{year_col}'. These will be discarede"
+        )
 
-    # Add race data column
+    # Add race date based on year
     result_df = df.with_columns(
         pl.when(pl.col(year_col) == 2016)
         .then(pl.lit("2016-08-13"))
@@ -54,6 +54,8 @@ def add_race_date(
         .then(pl.lit("2022-08-13"))
         .when(pl.col(year_col) == 2023)
         .then(pl.lit("2023-08-12"))
+        .when(pl.col(year_col) == 2025)
+        .then(pl.lit("2025-08-09"))
         .otherwise(None)
         .alias("race_date")
     )
@@ -64,10 +66,11 @@ def add_race_date(
 
     return result_df
 
+
 def add_check_in_out__tod(
     df: pl.DataFrame,
     as_checkpoint_col: str,
-    date_col: str="race_date",
+    date_col: str = "race_date",
 ) -> pl.DataFrame:
     """
     Converts the time-of-day with correct date and time,
@@ -85,26 +88,28 @@ def add_check_in_out__tod(
         Dataframe with processed time of day into a datetime object
     """
 
-    #TODO: Determine if the time object contains date too (error handling required)
+    # TODO: Determine if the time object contains date too (error handling required)
     # First extract the time component of the time of day
-    result_df = df.with_columns([
-        pl.col(as_checkpoint_col)
-        .alias(f"{as_checkpoint_col}_time")
-    ])
+    result_df = df.with_columns(
+        [pl.col(as_checkpoint_col).alias(f"{as_checkpoint_col}_time")]
+    )
 
     # This converts the time-of-day value into datetime
-    result_df = result_df.with_columns([
-        (pl.col(date_col) + " " + pl.col(f"{as_checkpoint_col}_time"))
-        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
-        .alias(f"{as_checkpoint_col}_datetime")
-    ])
+    result_df = result_df.with_columns(
+        [
+            (pl.col(date_col) + " " + pl.col(f"{as_checkpoint_col}_time"))
+            .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
+            .alias(f"{as_checkpoint_col}_datetime")
+        ]
+    )
 
     return result_df
+
 
 def convert_elapsed_tod(
     df: pl.DataFrame,
     as_checkpoint_col: str,
-    date_col: str="race_date",
+    date_col: str = "race_date",
 ) -> pl.DataFrame:
     """
     Converts the elapsed time of a split value into datetime
@@ -132,21 +137,30 @@ def convert_elapsed_tod(
         as_elap = "as_check_out__elapsed"
         as_dt = "as_check_out__tod_datetime"
 
-
     # Convert the missing values to datetime as well
-    result_df = result_df.with_columns(
+    # result_df = df.filter(
+    #     pl.col(as_dt).is_null() and pl.col(as_elap).is_not_null()
+    #     ).with_columns(
+    #         pl.col(date_col).str.strptime(pl.Datetime)
+    # )
+    result_df = df.with_columns(
         pl.when(pl.col(as_dt).is_null())
-        .then((
-            pl.col(date_col).str.strptime(pl.Date) +
-            pl.duration(
-                    hours=pl.col(as_elap).str.split(":").list.get(0).cast(pl.Int32),
-                    minutes=pl.col(as_elap).str.split(":").list.get(1).cast(pl.Int32),
-                    seconds=pl.col(as_elap).str.split(":").list.get(2).cast(pl.Float32)
-                )
-        ))
+        .then(
+            pl.col(date_col).str.strptime(pl.Datetime)
+            + pl.duration(
+                hours=pl.col(as_elap).str.split(
+                    ":").list.get(0).cast(pl.Int32),
+                minutes=pl.col(as_elap).str.split(
+                    ":").list.get(1).cast(pl.Int32),
+                seconds=pl.col(as_elap).str.split(
+                    ":").list.get(2).cast(pl.Float32),
+            )
+        )
+        .alias(as_dt)
     )
 
     return result_df
+
 
 def preprocess_20162017_data(df: pl.DataFrame):
     """
@@ -161,8 +175,10 @@ def preprocess_20162017_data(df: pl.DataFrame):
 
     Returns: Preprocessed dataframe ready to combine with other years
     """
-    
-    logger.info(f"Starting preprocessing of {df.shape[0]} rows and {df.shape[1]} features.")
+
+    logger.info(
+        f"Starting preprocessing of {df.shape[0]} rows and {df.shape[1]} features."
+    )
 
     try:
         # Data validation
@@ -172,21 +188,14 @@ def preprocess_20162017_data(df: pl.DataFrame):
         # Step 1: Add race date based on year
         logger.info("Adding race date column...")
         df = add_race_date(df, year_col="year")
-        logger.info("Adding check-in datetime")
-        df = add_check_in_out__tod(
-            df=df,
-            as_checkpoint_col="as_check_in__tod",
-            date_col="race_date"
-        )
-        
+
         # Log successful modification
-        logger.info(f"Successfully preprocessed data. Final shape: {df.shape[0]} rows and {df.shape[1]} columns")
-
-
+        logger.info(
+            f"Successfully preprocessed data. Final shape: {df.shape[0]} rows and {df.shape[1]} columns"
+        )
 
         return df
 
     except Exception as e:
         logger.error(f"Error during preprocessing: {str(e)}")
         raise
-
