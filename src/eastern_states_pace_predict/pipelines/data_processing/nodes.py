@@ -1,7 +1,8 @@
-import pandas as pd
-import polars as pl
-from datetime import datetime as dt
 import logging
+
+import plotly.graph_objects as go
+import polars as pl
+from plotly.subplots import make_subplots
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ def add_race_date(df: pl.DataFrame, year_col: str = "year") -> pl.DataFrame:
     null_count = df[year_col].null_count()
     if null_count > 0:
         logger.warning(
-            f"Found {null_count} null values in '{year_col}'. These will be discarede"
+            f"""Found {null_count} null values
+            in '{year_col}'. These will be discarede"""
         )
 
     # Add race date based on year
@@ -199,3 +201,139 @@ def preprocess_20162017_data(df: pl.DataFrame):
     except Exception as e:
         logger.error(f"Error during preprocessing: {str(e)}")
         raise
+
+
+def flag_negative_elapsed_times(
+    df: pl.DataFrame, elapsed_col: str = "as_check_in__elapsed__min"
+) -> pl.DataFrame:
+    """
+    Flag runners with negative elapsed times by identifying bib and year.
+    Adds a 'has_timing_error' column to mark flagged runners.
+
+    Args:
+        df: Input dataframe with timing data
+        elapsed_col: Name of the elapsed time column to check
+
+    Returns:
+        Dataframe with 'has_timing_error' boolean column and
+        'flagged_bibs' column containing set of flagged (bib, year) pairs
+    """
+    logger.info(f"Checking for negative values in column: {elapsed_col}")
+
+    # Check if column exists
+    if elapsed_col not in df.columns:
+        raise ValueError(f'Column "{elapsed_col}" not found in dataframe.')
+
+    # Find runners with any negative elapsed times
+    flagged_runners = (
+        df.filter(pl.col(elapsed_col) < 0).select(["bib", "year"]).unique()
+    )
+
+    # Log findings
+    num_flagged = len(flagged_runners)
+    if num_flagged > 0:
+        logger.warning(
+            f"Found {num_flagged} runners with negative elapsed times:")
+        for row in flagged_runners.iter_rows(named=True):
+            logger.warning(f"  - Bib: {row['bib']}, Year: {row['year']}")
+    else:
+        logger.info("No negative elapsed times found.")
+
+    # Create a filtered dataframe to propogate
+    filtered_df = df.join(flagged_runners, on=["bib", "year"], how="anti")
+
+    # Create a separate dataframe with the missing values
+    flagged_df = df.join(flagged_runners, on=["bib", "year"], how="inner")
+
+    # Log summary
+    total_flagged_rows = flagged_df.height
+    logger.info(
+        f"Flagged {total_flagged_rows} total rows across {num_flagged} runners")
+
+    return filtered_df
+
+
+def visualize_elapsed_times_by_runner(
+    df: pl.DataFrame,
+    elapsed_col: str = "as_check_in__elapsed__min",
+    index_col: str = "as_index",
+) -> go.Figure:
+    """
+    Create line charts showing elapsed times by runner, with separate subplots per year.
+    Flagged runners (with timing errors) are shown in red, others in grey.
+
+    Args:
+        df: Input dataframe with timing data and flags
+        elapsed_col: Name of elapsed time column for y-axis
+        index_col: Name of index column for x-axis (aid station index)
+
+    Returns:
+        Plotly Figure object with subplots (one per year)
+    """
+    logger.info("Creating elapsed time visualization...")
+
+    # Check required columns exist
+    required_cols = [elapsed_col, index_col, "bib", "year"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+
+    # Get unique years and sort
+    years = df["year"].unique().sort().to_list()
+    num_years = len(years)
+
+    logger.info(f"Creating {num_years} subplots for years: {years}")
+
+    # Create subplots - one per year
+    fig = make_subplots(
+        rows=num_years,
+        cols=1,
+        subplot_titles=[f"Year {year}" for year in years],
+        vertical_spacing=0.1,
+    )
+
+    # Process each year
+    for idx, year in enumerate(years, start=1):
+        year_data = df.filter(pl.col("year") == year)
+
+        # Get unique runners for this year
+        runners = year_data["bib"].unique().sort().to_list()
+
+        logger.info(f"Year {year}: Processing {len(runners)} runners")
+
+        # Plot each runner
+        for bib in runners:
+            runner_data = year_data.filter(
+                pl.col("bib") == bib).sort(index_col)
+
+            # Convert to pandas for plotly (plotly doesn't support polars directly)
+            runner_pd = runner_data.select(
+                [index_col, elapsed_col]).to_pandas()
+
+            # Add trace
+            fig.add_trace(
+                go.Scatter(
+                    x=runner_pd[index_col],
+                    y=runner_pd[elapsed_col],
+                    mode="lines+markers",
+                    hovertemplate=f"Bib: {bib}<br>AS Index: %{{x}}<br>Elapsed: %{{y:.2f}} min<extra></extra>",
+                ),
+                row=idx,
+                col=1,
+            )
+
+        # Update axes for this subplot
+        fig.update_xaxes(title_text="Aid Station Index", row=idx, col=1)
+        fig.update_yaxes(title_text="Elapsed Time (min)", row=idx, col=1)
+
+    # Update overall layout
+    fig.update_layout(
+        height=400 * num_years,  # Scale height with number of years
+        title_text="Runner Elapsed Times by Aid Station (Flagged Runners in Red)",
+        showlegend=True,
+        hovermode="closest",
+    )
+
+    logger.info("Visualization created successfully")
+
+    return fig
