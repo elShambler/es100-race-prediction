@@ -17,7 +17,7 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
             node(
                 func=flag_negative_elapsed_times,
-                inputs="es_splits_20167",
+                inputs="es_processed_20162017",
                 outputs="es_splits_20167_filtered",
                 name="flag_timing_errors_node",
             ),
