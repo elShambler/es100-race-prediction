@@ -255,7 +255,7 @@ def flag_negative_elapsed_times(
 def visualize_elapsed_times_by_runner(
     df: pl.DataFrame,
     elapsed_col: str = "as_check_in__elapsed__min",
-    index_col: str = "as_index",
+    index_col: str = "as_dist_from_start",
 ) -> go.Figure:
     """
     Create line charts showing elapsed times by runner, with separate subplots per year.
