@@ -40,7 +40,7 @@ es_processed_20162017:
   filepath: data/02_intermediate/es_20162017_processed.pq
   file_format: parquet
 
-es_splits_20167_flagged:
+es_splits_20167_filtered:
   type: polars.LazyPolarsDataset
   filepath: data/02_intermediate/es_20162017_filtered.pq
   file_format: parquet
@@ -48,5 +48,5 @@ es_splits_20167_flagged:
 es_timing_validation_plot:
   type: plotly.JSONDataset
   filepath: data/08_reporting/timing_validation_plot.json
-  plotly_args:
+  save_args:
     engine: json
