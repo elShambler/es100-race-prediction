@@ -221,7 +221,7 @@ def flag_negative_elapsed_times(
     logger.info(f"Checking for negative values in column: {elapsed_col}")
 
     # Check if column exists
-    if elapsed_col not in df.columns:
+    if elapsed_col not in df.collect_schema().names():
         raise ValueError(f'Column "{elapsed_col}" not found in dataframe.')
 
     # Find runners with any negative elapsed times
@@ -229,24 +229,23 @@ def flag_negative_elapsed_times(
         df.filter(pl.col(elapsed_col) < 0).select(["bib", "year"]).unique()
     )
 
-    # Log findings
-    num_flagged = len(flagged_runners)
+    # Continue on if there are empty values
+    num_flagged = flagged_runners.collect().shape[0]
     if num_flagged > 0:
         logger.warning(
             f"Found {num_flagged} runners with negative elapsed times:")
-        for row in flagged_runners.iter_rows(named=True):
+        for row in flagged_runners.collect().iter_rows(named=True):
             logger.warning(f"  - Bib: {row['bib']}, Year: {row['year']}")
     else:
         logger.info("No negative elapsed times found.")
 
     # Create a filtered dataframe to propogate
     filtered_df = df.join(flagged_runners, on=["bib", "year"], how="anti")
-
     # Create a separate dataframe with the missing values
     flagged_df = df.join(flagged_runners, on=["bib", "year"], how="inner")
 
     # Log summary
-    total_flagged_rows = flagged_df.height
+    total_flagged_rows = flagged_df.collect().height
     logger.info(
         f"Flagged {total_flagged_rows} total rows across {num_flagged} runners")
 
@@ -274,12 +273,14 @@ def visualize_elapsed_times_by_runner(
 
     # Check required columns exist
     required_cols = [elapsed_col, index_col, "bib", "year"]
-    missing_cols = [col for col in required_cols if col not in df.columns]
+    missing_cols = [
+        col for col in required_cols if col not in df.collect_schema().names()
+    ]
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
 
     # Get unique years and sort
-    years = df["year"].unique().sort().to_list()
+    years = df.select("year").collect().unique().to_series()
     num_years = len(years)
 
     logger.info(f"Creating {num_years} subplots for years: {years}")
@@ -297,7 +298,10 @@ def visualize_elapsed_times_by_runner(
         year_data = df.filter(pl.col("year") == year)
 
         # Get unique runners for this year
-        runners = year_data["bib"].unique().sort().to_list()
+        runners = list(
+            year_data.select("bib").unique().sort(
+                by="bib").collect().to_series()
+        )
 
         logger.info(f"Year {year}: Processing {len(runners)} runners")
 
@@ -307,8 +311,10 @@ def visualize_elapsed_times_by_runner(
                 pl.col("bib") == bib).sort(index_col)
 
             # Convert to pandas for plotly (plotly doesn't support polars directly)
-            runner_pd = runner_data.select(
-                [index_col, elapsed_col]).to_pandas()
+            runner_pd = (
+                runner_data.select([index_col, elapsed_col]
+                                   ).collect().to_pandas()
+            )
 
             # Add trace
             fig.add_trace(
