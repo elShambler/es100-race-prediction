@@ -150,12 +150,9 @@ def convert_elapsed_tod(
         .then(
             pl.col(date_col).str.strptime(pl.Datetime)
             + pl.duration(
-                hours=pl.col(as_elap).str.split(
-                    ":").list.get(0).cast(pl.Int32),
-                minutes=pl.col(as_elap).str.split(
-                    ":").list.get(1).cast(pl.Int32),
-                seconds=pl.col(as_elap).str.split(
-                    ":").list.get(2).cast(pl.Float32),
+                hours=pl.col(as_elap).str.split(":").list.get(0).cast(pl.Int32),
+                minutes=pl.col(as_elap).str.split(":").list.get(1).cast(pl.Int32),
+                seconds=pl.col(as_elap).str.split(":").list.get(2).cast(pl.Float32),
             )
         )
         .alias(as_dt)
@@ -203,6 +200,38 @@ def preprocess_20162017_data(df: pl.DataFrame):
         raise
 
 
+def process_2021_data(df: pl.DataFrame):
+    """
+    2021 data was part of the new initiative to take in data more methodically
+    from each aid station, in collobaration with the ESTEA. This data was
+    originally compiled by a group analyzing the raw data, and cleaned previously.
+    As such, the data load is in the final state.
+    This is the basis for all subsequent data loads.
+
+    output: Polars parquet
+    """
+
+    try:
+        # Data validation
+        if df.is_empty():
+            raise ValueError("Input dataframe is empty")
+
+        logger.info("Loading in 2021 data")
+
+        df = add_race_date(df, year_col="year")
+
+        # Log successful modification
+        logger.info(
+            f"Successfully preprocessed data. Final shape: {df.shape[0]} rows and {df.shape[1]} columns"
+        )
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Error during preprocessing : {str(e)}")
+        raise
+
+
 def flag_negative_elapsed_times(
     df: pl.DataFrame, elapsed_col: str = "as_check_in__elapsed__min"
 ) -> pl.DataFrame:
@@ -232,8 +261,7 @@ def flag_negative_elapsed_times(
     # Continue on if there are empty values
     num_flagged = flagged_runners.collect().shape[0]
     if num_flagged > 0:
-        logger.warning(
-            f"Found {num_flagged} runners with negative elapsed times:")
+        logger.warning(f"Found {num_flagged} runners with negative elapsed times:")
         for row in flagged_runners.collect().iter_rows(named=True):
             logger.warning(f"  - Bib: {row['bib']}, Year: {row['year']}")
     else:
@@ -246,8 +274,7 @@ def flag_negative_elapsed_times(
 
     # Log summary
     total_flagged_rows = flagged_df.collect().height
-    logger.info(
-        f"Flagged {total_flagged_rows} total rows across {num_flagged} runners")
+    logger.info(f"Flagged {total_flagged_rows} total rows across {num_flagged} runners")
 
     return filtered_df
 
@@ -299,21 +326,18 @@ def visualize_elapsed_times_by_runner(
 
         # Get unique runners for this year
         runners = list(
-            year_data.select("bib").unique().sort(
-                by="bib").collect().to_series()
+            year_data.select("bib").unique().sort(by="bib").collect().to_series()
         )
 
         logger.info(f"Year {year}: Processing {len(runners)} runners")
 
         # Plot each runner
         for bib in runners:
-            runner_data = year_data.filter(
-                pl.col("bib") == bib).sort(index_col)
+            runner_data = year_data.filter(pl.col("bib") == bib).sort(index_col)
 
             # Convert to pandas for plotly (plotly doesn't support polars directly)
             runner_pd = (
-                runner_data.select([index_col, elapsed_col]
-                                   ).collect().to_pandas()
+                runner_data.select([index_col, elapsed_col]).collect().to_pandas()
             )
 
             # Add trace
