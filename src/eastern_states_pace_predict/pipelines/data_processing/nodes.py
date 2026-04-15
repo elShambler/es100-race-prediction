@@ -569,8 +569,8 @@ def visualize_elapsed_times_by_runner(
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
 
-    # Get unique years and sort
-    years = df.select("year").collect().unique().to_series()
+    # Get unique non-null years and sort
+    years = df.select("year").collect().drop_nulls().unique().to_series().sort()
     num_years = len(years)
 
     logger.info(f"Creating {num_years} subplots for years: {years}")
