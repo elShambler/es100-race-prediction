@@ -8,11 +8,10 @@ from plotly.subplots import make_subplots
 
 # Constants for 2025 data processing
 _RACE_START_TIME = "05:00"
+_RACE_START_TIME_PARSED = datetime.strptime(_RACE_START_TIME, "%H:%M").time()
 _MISSING_TIME_MARKER = "__:__"
 
 logger = logging.getLogger(__name__)
-
-# Load in our main datasets defined in catalog.yml
 
 
 def add_race_date(df: pl.DataFrame, year_col: str = "year") -> pl.DataFrame:
@@ -45,7 +44,7 @@ def add_race_date(df: pl.DataFrame, year_col: str = "year") -> pl.DataFrame:
     if null_count > 0:
         logger.warning(
             f"""Found {null_count} null values
-            in '{year_col}'. These will be discarede"""
+            in '{year_col}'. These will be discarded."""
         )
 
     # Add race date based on year
@@ -206,17 +205,20 @@ def preprocess_20162017_data(df: pl.DataFrame):
         raise
 
 
-def process_2021_data(df: pl.DataFrame):
+def process_2021_data(df: pl.DataFrame) -> pl.DataFrame:
     """
     2021 data was part of the new initiative to take in data more methodically
-    from each aid station, in collobaration with the ESTEA. This data was
+    from each aid station, in collaboration with the ESTEA. This data was
     originally compiled by a group analyzing the raw data, and cleaned previously.
     As such, the data load is in the final state.
     This is the basis for all subsequent data loads.
 
-    output: Polars parquet
-    """
+    Args:
+        df: Raw dataframe from 2021 splits
 
+    Returns:
+        Preprocessed DataFrame with race_date added
+    """
     try:
         # Data validation
         if df.is_empty():
@@ -226,7 +228,6 @@ def process_2021_data(df: pl.DataFrame):
 
         df = add_race_date(df, year_col="year")
 
-        # Log successful modification
         logger.info(
             f"Successfully preprocessed data. Final shape: {df.shape[0]} rows and {df.shape[1]} columns"
         )
@@ -234,7 +235,7 @@ def process_2021_data(df: pl.DataFrame):
         return df
 
     except Exception as e:
-        logger.error(f"Error during preprocessing : {str(e)}")
+        logger.error(f"Error during preprocessing: {str(e)}")
         raise
 
 
@@ -351,8 +352,7 @@ def _parse_time_to_datetime(time_str: str, race_date: str) -> datetime | None:
     try:
         dt = datetime.strptime(f"{race_date} {time_str}", "%Y-%m-%d %H:%M:%S")
         time_only = datetime.strptime(time_str, "%H:%M:%S").time()
-        start_time = datetime.strptime(_RACE_START_TIME, "%H:%M").time()
-        if time_only < start_time:
+        if time_only < _RACE_START_TIME_PARSED:
             dt += timedelta(days=1)
         return dt
     except Exception as e:
@@ -525,24 +525,19 @@ def flag_negative_elapsed_times(
     flagged_runners = (
         df.filter(pl.col(elapsed_col) < 0).select(["bib", "year"]).unique()
     )
+    flagged_collected = flagged_runners.collect()
+    num_flagged = flagged_collected.shape[0]
 
-    # Continue on if there are empty values
-    num_flagged = flagged_runners.collect().shape[0]
     if num_flagged > 0:
         logger.warning(f"Found {num_flagged} runners with negative elapsed times:")
-        for row in flagged_runners.collect().iter_rows(named=True):
+        for row in flagged_collected.iter_rows(named=True):
             logger.warning(f"  - Bib: {row['bib']}, Year: {row['year']}")
     else:
         logger.info("No negative elapsed times found.")
 
-    # Create a filtered dataframe to propogate
+    # Exclude flagged runners from the output
     filtered_df = df.join(flagged_runners, on=["bib", "year"], how="anti")
-    # Create a separate dataframe with the missing values
-    flagged_df = df.join(flagged_runners, on=["bib", "year"], how="inner")
-
-    # Log summary
-    total_flagged_rows = flagged_df.collect().height
-    logger.info(f"Flagged {total_flagged_rows} total rows across {num_flagged} runners")
+    logger.info(f"Removed {num_flagged} runners with timing errors")
 
     return filtered_df
 
