@@ -29,7 +29,7 @@ es_asinfo_historical:
   type: polars.CSVDataset
   filepath: data/01_raw/ES100_2016-2017_asinfo.csv
   load_args:
-    sep: ","
+    separator: ","
 
 es_finish_historical:
   type: polars.CSVDataset
@@ -43,6 +43,17 @@ es_processed_20162017:
 es_splits_20167_filtered:
   type: polars.LazyPolarsDataset
   filepath: data/02_intermediate/es_20162017_filtered.pq
+  file_format: parquet
+
+es_splits_2025:
+  type: polars.CSVDataset
+  filepath: data/01_raw/ES100_2025_splits.csv
+  load_args:
+    separator: ","
+
+es_processed_2025:
+  type: polars.LazyPolarsDataset
+  filepath: data/02_intermediate/es_2025_processed.pq
   file_format: parquet
 
 es_timing_validation_plot:

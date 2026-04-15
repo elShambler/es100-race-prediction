@@ -1,8 +1,14 @@
 import logging
+import re
+from datetime import datetime, timedelta
 
 import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
+
+# Constants for 2025 data processing
+_RACE_START_TIME = "05:00"
+_MISSING_TIME_MARKER = "__:__"
 
 logger = logging.getLogger(__name__)
 
@@ -232,11 +238,266 @@ def process_2021_data(df: pl.DataFrame):
         raise
 
 
-def process_2025_data(df:pl.DataFrame):
+def _parse_aid_station_columns(columns: list[str]) -> list[dict]:
     """
-    2025 data featured slightly different formatting. We will process this her
+    Parse 2025 CSV column headers to extract aid station info.
 
+    Full headers look like "Ramsey RD: AS-1 - In". Bare "Out" columns
+    (which Polars may rename to "Out_duplicated_N") are associated with
+    the preceding parsed column via a last_parsed memory variable.
     """
+    parsed_columns = []
+    last_parsed = None
+
+    for col in columns:
+        if col in ["Bib", "Name"]:
+            continue
+
+        # Match bare Out columns (Polars deduplicates to Out_duplicated_N)
+        if re.fullmatch(r"Out(_duplicated_\d+)?", col.strip()):
+            if last_parsed is None:
+                logger.warning(f"Bare 'Out' column '{col}' has no preceding column to associate with; skipping")
+                continue
+            parsed_columns.append({
+                'original_col': col,
+                'as_name': last_parsed['as_name'],
+                'as_number': last_parsed['as_number'],
+                'direction': 'Out',
+                'as_index': last_parsed['as_index'],
+            })
+            last_parsed = None
+            continue
+
+        try:
+            if ":" not in col:
+                logger.warning(f"Skipping column with unexpected format: {col}")
+                last_parsed = None
+                continue
+
+            name_part, rest = col.split(":", 1)
+            as_name = name_part.strip()
+
+            if " - " not in rest:
+                logger.warning(f"Skipping column with unexpected format: {col}")
+                last_parsed = None
+                continue
+
+            as_part, direction = rest.split(" - ", 1)
+            as_part = as_part.strip()
+            direction = direction.strip()
+
+            if as_part.startswith("AS-"):
+                as_number = as_part.replace("AS-", "")
+                as_index = f"AS{as_number}"
+            elif "Start" in as_part:
+                as_number = "Start"
+                as_index = "START"
+            elif "Finish" in as_part:
+                as_number = "Finish"
+                as_index = "FINISH"
+            else:
+                as_number = as_part
+                as_index = as_part.upper().replace(" ", "_")
+
+            entry = {
+                'original_col': col,
+                'as_name': as_name,
+                'as_number': as_number,
+                'direction': direction,
+                'as_index': as_index,
+            }
+            parsed_columns.append(entry)
+            last_parsed = entry
+
+        except Exception as e:
+            logger.warning(f"Error parsing column '{col}': {e}")
+            last_parsed = None
+            continue
+
+    in_count = sum(1 for c in parsed_columns if c['direction'] == 'In')
+    out_count = sum(1 for c in parsed_columns if c['direction'] == 'Out')
+    if in_count != out_count:
+        logger.warning(f"Column imbalance: {in_count} In vs {out_count} Out")
+    else:
+        logger.info(f"Column balance check passed: {in_count} In and {out_count} Out columns")
+
+    return parsed_columns
+
+
+def _normalize_time_string(time_str: str) -> str | None:
+    """Normalize a raw time string to HH:MM:SS, returning None if missing/invalid."""
+    if not time_str or time_str == _MISSING_TIME_MARKER:
+        return None
+    time_str = time_str.strip()
+    try:
+        parts = time_str.split(":")
+        if len(parts) == 2:
+            return f"{parts[0].zfill(2)}:{parts[1]}:00"
+        elif len(parts) == 3:
+            return f"{parts[0].zfill(2)}:{parts[1]}:{parts[2]}"
+        return None
+    except Exception as e:
+        logger.warning(f"Error normalizing time string '{time_str}': {e}")
+        return None
+
+
+def _parse_time_to_datetime(time_str: str, race_date: str) -> datetime | None:
+    """
+    Convert a HH:MM:SS time string and race date to a datetime.
+    Times before 05:00 are assumed to be post-midnight (next day).
+    """
+    if not time_str:
+        return None
+    try:
+        dt = datetime.strptime(f"{race_date} {time_str}", "%Y-%m-%d %H:%M:%S")
+        time_only = datetime.strptime(time_str, "%H:%M:%S").time()
+        start_time = datetime.strptime(_RACE_START_TIME, "%H:%M").time()
+        if time_only < start_time:
+            dt += timedelta(days=1)
+        return dt
+    except Exception as e:
+        logger.warning(f"Error parsing time to datetime '{time_str}': {e}")
+        return None
+
+
+def _calculate_elapsed_minutes(checkpoint_time: datetime, race_start: datetime) -> float | None:
+    """Return elapsed minutes from race start to checkpoint, or None if either is missing."""
+    if not checkpoint_time or not race_start:
+        return None
+    try:
+        return (checkpoint_time - race_start).total_seconds() / 60.0
+    except Exception as e:
+        logger.warning(f"Error calculating elapsed time: {e}")
+        return None
+
+
+def _reshape_wide_to_long(
+    df_wide: pl.DataFrame,
+    parsed_columns: list[dict],
+    as_metadata: pl.DataFrame,
+    race_date: str,
+    race_year: int,
+) -> pl.DataFrame:
+    """Reshape wide-format 2025 data to long format matching the 2016-2017 structure."""
+    logger.info(f"Reshaping {df_wide.shape[0]} rows from wide to long format")
+
+    race_start_dt = datetime.strptime(f"{race_date} {_RACE_START_TIME}", "%Y-%m-%d %H:%M")
+
+    # Group parsed columns by aid station index
+    aid_stations: dict[str, dict] = {}
+    for col_info in parsed_columns:
+        key = col_info['as_index']
+        if key not in aid_stations:
+            aid_stations[key] = {'in': None, 'out': None, 'name': col_info['as_name']}
+        if col_info['direction'] == 'In':
+            aid_stations[key]['in'] = col_info['original_col']
+        elif col_info['direction'] == 'Out':
+            aid_stations[key]['out'] = col_info['original_col']
+
+    logger.info(f"Found {len(aid_stations)} unique aid stations")
+
+    all_rows = []
+    for row_idx, runner_row in enumerate(df_wide.iter_rows(named=True)):
+        bib = runner_row.get('Bib')
+        name = runner_row.get('Name', '')
+
+        for as_index, as_cols in aid_stations.items():
+            if as_index == 'START':
+                continue
+
+            in_col = as_cols.get('in')
+            out_col = as_cols.get('out')
+            in_time_raw = runner_row.get(in_col, _MISSING_TIME_MARKER) if in_col else _MISSING_TIME_MARKER
+            out_time_raw = runner_row.get(out_col, _MISSING_TIME_MARKER) if out_col else _MISSING_TIME_MARKER
+
+            in_time_str = _normalize_time_string(in_time_raw)
+            out_time_str = _normalize_time_string(out_time_raw)
+
+            if not in_time_str and not out_time_str:
+                continue
+
+            in_datetime = _parse_time_to_datetime(in_time_str, race_date) if in_time_str else None
+            out_datetime = _parse_time_to_datetime(out_time_str, race_date) if out_time_str else None
+
+            in_elapsed_min = _calculate_elapsed_minutes(in_datetime, race_start_dt)
+            out_elapsed_min = _calculate_elapsed_minutes(out_datetime, race_start_dt)
+
+            all_rows.append({
+                'year': race_year,
+                'bib': bib,
+                'name': name,
+                'gender': None,
+                'age': None,
+                'as_index': as_index,
+                'as_name': as_cols['name'],
+                'as_check_in__tod': in_time_str,
+                'as_check_out__tod': out_time_str,
+                'as_check_in__elapsed': None,
+                'as_check_out__elapsed': None,
+                'race_datetime': race_start_dt.strftime("%m/%d/%Y %H:%M"),
+                'as_check_in__tod__datetime': in_datetime.strftime("%m/%d/%Y %H:%M") if in_datetime else None,
+                'as_check_in__elapsed__min': in_elapsed_min,
+                'as_check_out__tod__datetime': out_datetime.strftime("%m/%d/%Y %H:%M") if out_datetime else None,
+                'as_check_out__elapsed__min': out_elapsed_min,
+                'as_dist_from_start': None,
+                'as_dist_incr': None,
+            })
+
+        if (row_idx + 1) % 50 == 0:
+            logger.info(f"Processed {row_idx + 1} runners...")
+
+    logger.info(f"Created {len(all_rows)} total checkpoint records")
+    df_long = pl.DataFrame(all_rows)
+
+    # Join aid station distances from metadata
+    as_meta_clean = as_metadata.select([
+        pl.col('as_index').str.to_uppercase().alias('as_index'),
+        pl.col('as_cum_dist').alias('as_dist_from_start'),
+        pl.col('as_dist').alias('as_dist_incr'),
+    ])
+    df_long = df_long.join(as_meta_clean, on='as_index', how='left', suffix='_meta')
+    if 'as_dist_from_start_meta' in df_long.columns:
+        df_long = df_long.drop(['as_dist_from_start', 'as_dist_incr']).rename({
+            'as_dist_from_start_meta': 'as_dist_from_start',
+            'as_dist_incr_meta': 'as_dist_incr',
+        })
+
+    logger.info(f"Final long format shape: {df_long.shape}")
+    return df_long
+
+
+def process_2025_data(df: pl.DataFrame, as_metadata: pl.DataFrame) -> pl.DataFrame:
+    """
+    Process 2025 Eastern States 100 data from wide format to long format.
+
+    The 2025 data has one row per runner with aid station columns, predominantly
+    with check-out times. Converts to long format matching other years' structure.
+
+    Args:
+        df: Raw wide-format DataFrame from ES100_2025_splits.csv
+        as_metadata: Aid station metadata with distances (es_asinfo_historical)
+
+    Returns:
+        Long-format DataFrame matching the 2016-2017 processed structure
+    """
+    race_date = "2025-08-09"
+    race_year = 2025
+
+    logger.info(f"Starting preprocessing of 2025 data: {df.shape[0]} rows, {df.shape[1]} columns")
+
+    try:
+        if df.is_empty():
+            raise ValueError("Input dataframe is empty")
+
+        parsed_cols = _parse_aid_station_columns(df.columns)
+        df_long = _reshape_wide_to_long(df, parsed_cols, as_metadata, race_date, race_year)
+
+        logger.info(f"Successfully processed 2025 data. Final shape: {df_long.shape[0]} rows, {df_long.shape[1]} columns")
+        return df_long
+
+    except Exception as e:
+        logger.error(f"Error during 2025 preprocessing: {str(e)}")
+        raise
 
 
 def flag_negative_elapsed_times(

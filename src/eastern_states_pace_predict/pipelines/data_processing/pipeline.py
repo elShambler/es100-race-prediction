@@ -1,6 +1,7 @@
 from kedro.pipeline import Pipeline, node, pipeline
 from .nodes import (
     preprocess_20162017_data,
+    process_2025_data,
     flag_negative_elapsed_times,
     visualize_elapsed_times_by_runner,
 )
@@ -14,6 +15,12 @@ def create_pipeline(**kwargs) -> Pipeline:
                 inputs="es_splits_20167",
                 outputs="es_processed_20162017",
                 name="preprocess_ultralive_node",
+            ),
+            node(
+                func=process_2025_data,
+                inputs=["es_splits_2025", "es_asinfo_historical"],
+                outputs="es_processed_2025",
+                name="preprocess_2025_node",
             ),
             node(
                 func=flag_negative_elapsed_times,
