@@ -10,6 +10,7 @@ Date: 2025
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -33,7 +34,6 @@ RAW_DATA_PATH = Path("data/01_raw/ES100_2025_splits.csv")
 AS_INFO_PATH = Path("data/01_raw/ES100_2016-2017_asinfo.csv")
 OUTPUT_PATH = Path("data/02_intermediate/es_2025_processed_test.csv")
 
-
 def load_aid_station_metadata() -> pl.DataFrame:
     """
     Load aid station metadata including names, indices, and distances.
@@ -54,7 +54,6 @@ def load_aid_station_metadata() -> pl.DataFrame:
         separator=",",
         encoding="utf8-lossy"  # Handle BOM if present
     )
-
     logger.info(f"Loaded {len(as_info)} aid stations")
     return as_info
 
@@ -85,10 +84,27 @@ def parse_aid_station_columns(columns: list[str]) -> list[dict]:
     logger.info("Parsing aid station column headers")
 
     parsed_columns = []
+    last_parsed = None  # Memory: tracks the last successfully parsed column
 
     for col in columns:
         # Skip non-aid-station columns
         if col in ["Bib", "Name"]:
+            continue
+
+        # Handle bare "Out" columns that lack a full header but follow their "In" partner.
+        # Polars renames duplicate column names to "Out_duplicated_N", so we match both forms.
+        if re.fullmatch(r"Out(_duplicated_\d+)?", col.strip()):
+            if last_parsed is None:
+                logger.warning(f"Found bare 'Out' column with no preceding parsed column to associate it with; skipping")
+                continue
+            parsed_columns.append({
+                'original_col': col,
+                'as_name': last_parsed['as_name'],
+                'as_number': last_parsed['as_number'],
+                'direction': 'Out',
+                'as_index': last_parsed['as_index']
+            })
+            last_parsed = None  # Reset: each "In" should only absorb one following "Out"
             continue
 
         # Parse format: "AS_NAME: AS-X - Direction"
@@ -96,6 +112,7 @@ def parse_aid_station_columns(columns: list[str]) -> list[dict]:
             # Split by colon to separate name from AS number
             if ":" not in col:
                 logger.warning(f"Skipping column with unexpected format: {col}")
+                last_parsed = None
                 continue
 
             name_part, rest = col.split(":", 1)
@@ -104,6 +121,7 @@ def parse_aid_station_columns(columns: list[str]) -> list[dict]:
             # Split the rest by " - " to get AS number and direction
             if " - " not in rest:
                 logger.warning(f"Skipping column with unexpected format: {col}")
+                last_parsed = None
                 continue
 
             as_part, direction = rest.split(" - ", 1)
@@ -124,17 +142,31 @@ def parse_aid_station_columns(columns: list[str]) -> list[dict]:
                 as_number = as_part
                 as_index = as_part.upper().replace(" ", "_")
 
-            parsed_columns.append({
+            entry = {
                 'original_col': col,
                 'as_name': as_name,
                 'as_number': as_number,
                 'direction': direction,
                 'as_index': as_index
-            })
+            }
+            parsed_columns.append(entry)
+            last_parsed = entry
 
         except Exception as e:
             logger.warning(f"Error parsing column '{col}': {e}")
+            last_parsed = None
             continue
+
+    # Validate that In and Out counts are balanced
+    in_count = sum(1 for c in parsed_columns if c['direction'] == 'In')
+    out_count = sum(1 for c in parsed_columns if c['direction'] == 'Out')
+    if in_count != out_count:
+        logger.warning(
+            f"Mismatch between 'In' and 'Out' columns: {in_count} In vs {out_count} Out. "
+            "Some aid stations may be missing a paired column."
+        )
+    else:
+        logger.info(f"Column balance check passed: {in_count} In and {out_count} Out columns")
 
     logger.info(f"Successfully parsed {len(parsed_columns)} aid station columns")
     return parsed_columns
@@ -175,7 +207,8 @@ def normalize_time_string(time_str: str) -> str | None:
             hours = hours.zfill(2)
             return f"{hours}:{minutes}:{seconds}"
         else:
-            logger.warning(f"Unexpected time format: {time_str}")
+            # Turning off logging due to the high frequency of unformatted text
+            #logger.warning(f"Unexpected time format: {time_str}")
             return None
 
     except Exception as e:
