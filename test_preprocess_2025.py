@@ -368,6 +368,8 @@ def reshape_wide_to_long(
                 'race_datetime': race_start_dt.strftime("%m/%d/%Y %H:%M"),
                 'as_check_in__tod__datetime': in_datetime.strftime("%m/%d/%Y %H:%M") if in_datetime else None,
                 'as_check_in__elapsed__min': in_elapsed_min,
+                'as_check_out__tod__datetime': out_datetime.strftime("%m/%d/%Y %H:%M") if out_datetime else None,
+                'as_check_out__elapsed__min': out_elapsed_min,
                 'as_dist_from_start': None,  # Will join from metadata
                 'as_dist_incr': None,        # Will join from metadata
             }
@@ -430,6 +432,8 @@ def validate_output(df: pl.DataFrame) -> dict:
         'unique_aid_stations': df['as_index'].n_unique(),
         'missing_check_in_times': df['as_check_in__tod'].null_count(),
         'missing_check_out_times': df['as_check_out__tod'].null_count(),
+        'missing_check_in_datetimes': df['as_check_in__tod__datetime'].null_count(),
+        'missing_check_out_datetimes': df['as_check_out__tod__datetime'].null_count(),
         'missing_distances': df['as_dist_from_start'].null_count(),
         'negative_elapsed_times': 0,
         'aid_station_distribution': {}
