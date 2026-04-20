@@ -155,9 +155,12 @@ def convert_elapsed_tod(
         .then(
             pl.col(date_col).str.strptime(pl.Datetime)
             + pl.duration(
-                hours=pl.col(as_elap).str.split(":").list.get(0).cast(pl.Int32),
-                minutes=pl.col(as_elap).str.split(":").list.get(1).cast(pl.Int32),
-                seconds=pl.col(as_elap).str.split(":").list.get(2).cast(pl.Float32),
+                hours=pl.col(as_elap).str.split(
+                    ":").list.get(0).cast(pl.Int32),
+                minutes=pl.col(as_elap).str.split(
+                    ":").list.get(1).cast(pl.Int32),
+                seconds=pl.col(as_elap).str.split(
+                    ":").list.get(2).cast(pl.Float32),
             )
         )
         .alias(as_dt)
@@ -192,6 +195,10 @@ def preprocess_20162017_data(df: pl.DataFrame):
         # Step 1: Add race date based on year
         logger.info("Adding race date column...")
         df = add_race_date(df, year_col="year")
+
+        # Drop unnamed artifact column from source CSV
+        if "" in df.columns:
+            df = df.drop("")
 
         # Log successful modification
         logger.info(
@@ -257,21 +264,26 @@ def _parse_aid_station_columns(columns: list[str]) -> list[dict]:
         # Match bare Out columns (Polars deduplicates to Out_duplicated_N)
         if re.fullmatch(r"Out(_duplicated_\d+)?", col.strip()):
             if last_parsed is None:
-                logger.warning(f"Bare 'Out' column '{col}' has no preceding column to associate with; skipping")
+                logger.warning(
+                    f"Bare 'Out' column '{col}' has no preceding column to associate with; skipping"
+                )
                 continue
-            parsed_columns.append({
-                'original_col': col,
-                'as_name': last_parsed['as_name'],
-                'as_number': last_parsed['as_number'],
-                'direction': 'Out',
-                'as_index': last_parsed['as_index'],
-            })
+            parsed_columns.append(
+                {
+                    "original_col": col,
+                    "as_name": last_parsed["as_name"],
+                    "as_number": last_parsed["as_number"],
+                    "direction": "Out",
+                    "as_index": last_parsed["as_index"],
+                }
+            )
             last_parsed = None
             continue
 
         try:
             if ":" not in col:
-                logger.warning(f"Skipping column with unexpected format: {col}")
+                logger.warning(
+                    f"Skipping column with unexpected format: {col}")
                 last_parsed = None
                 continue
 
@@ -279,7 +291,8 @@ def _parse_aid_station_columns(columns: list[str]) -> list[dict]:
             as_name = name_part.strip()
 
             if " - " not in rest:
-                logger.warning(f"Skipping column with unexpected format: {col}")
+                logger.warning(
+                    f"Skipping column with unexpected format: {col}")
                 last_parsed = None
                 continue
 
@@ -301,11 +314,11 @@ def _parse_aid_station_columns(columns: list[str]) -> list[dict]:
                 as_index = as_part.upper().replace(" ", "_")
 
             entry = {
-                'original_col': col,
-                'as_name': as_name,
-                'as_number': as_number,
-                'direction': direction,
-                'as_index': as_index,
+                "original_col": col,
+                "as_name": as_name,
+                "as_number": as_number,
+                "direction": direction,
+                "as_index": as_index,
             }
             parsed_columns.append(entry)
             last_parsed = entry
@@ -315,12 +328,14 @@ def _parse_aid_station_columns(columns: list[str]) -> list[dict]:
             last_parsed = None
             continue
 
-    in_count = sum(1 for c in parsed_columns if c['direction'] == 'In')
-    out_count = sum(1 for c in parsed_columns if c['direction'] == 'Out')
+    in_count = sum(1 for c in parsed_columns if c["direction"] == "In")
+    out_count = sum(1 for c in parsed_columns if c["direction"] == "Out")
     if in_count != out_count:
         logger.warning(f"Column imbalance: {in_count} In vs {out_count} Out")
     else:
-        logger.info(f"Column balance check passed: {in_count} In and {out_count} Out columns")
+        logger.info(
+            f"Column balance check passed: {in_count} In and {out_count} Out columns"
+        )
 
     return parsed_columns
 
@@ -360,7 +375,9 @@ def _parse_time_to_datetime(time_str: str, race_date: str) -> datetime | None:
         return None
 
 
-def _calculate_elapsed_minutes(checkpoint_time: datetime, race_start: datetime) -> float | None:
+def _calculate_elapsed_minutes(
+    checkpoint_time: datetime, race_start: datetime
+) -> float | None:
     """Return elapsed minutes from race start to checkpoint, or None if either is missing."""
     if not checkpoint_time or not race_start:
         return None
@@ -381,34 +398,45 @@ def _reshape_wide_to_long(
     """Reshape wide-format 2025 data to long format matching the 2016-2017 structure."""
     logger.info(f"Reshaping {df_wide.shape[0]} rows from wide to long format")
 
-    race_start_dt = datetime.strptime(f"{race_date} {_RACE_START_TIME}", "%Y-%m-%d %H:%M")
+    race_start_dt = datetime.strptime(
+        f"{race_date} {_RACE_START_TIME}", "%Y-%m-%d %H:%M"
+    )
 
     # Group parsed columns by aid station index
     aid_stations: dict[str, dict] = {}
     for col_info in parsed_columns:
-        key = col_info['as_index']
+        key = col_info["as_index"]
         if key not in aid_stations:
-            aid_stations[key] = {'in': None, 'out': None, 'name': col_info['as_name']}
-        if col_info['direction'] == 'In':
-            aid_stations[key]['in'] = col_info['original_col']
-        elif col_info['direction'] == 'Out':
-            aid_stations[key]['out'] = col_info['original_col']
+            aid_stations[key] = {"in": None,
+                                 "out": None, "name": col_info["as_name"]}
+        if col_info["direction"] == "In":
+            aid_stations[key]["in"] = col_info["original_col"]
+        elif col_info["direction"] == "Out":
+            aid_stations[key]["out"] = col_info["original_col"]
 
     logger.info(f"Found {len(aid_stations)} unique aid stations")
 
     all_rows = []
     for row_idx, runner_row in enumerate(df_wide.iter_rows(named=True)):
-        bib = runner_row.get('Bib')
-        name = runner_row.get('Name', '')
+        bib = runner_row.get("Bib")
+        name = runner_row.get("Name", "")
 
         for as_index, as_cols in aid_stations.items():
-            if as_index == 'START':
+            if as_index == "START":
                 continue
 
-            in_col = as_cols.get('in')
-            out_col = as_cols.get('out')
-            in_time_raw = runner_row.get(in_col, _MISSING_TIME_MARKER) if in_col else _MISSING_TIME_MARKER
-            out_time_raw = runner_row.get(out_col, _MISSING_TIME_MARKER) if out_col else _MISSING_TIME_MARKER
+            in_col = as_cols.get("in")
+            out_col = as_cols.get("out")
+            in_time_raw = (
+                runner_row.get(in_col, _MISSING_TIME_MARKER)
+                if in_col
+                else _MISSING_TIME_MARKER
+            )
+            out_time_raw = (
+                runner_row.get(out_col, _MISSING_TIME_MARKER)
+                if out_col
+                else _MISSING_TIME_MARKER
+            )
 
             in_time_str = _normalize_time_string(in_time_raw)
             out_time_str = _normalize_time_string(out_time_raw)
@@ -416,32 +444,50 @@ def _reshape_wide_to_long(
             if not in_time_str and not out_time_str:
                 continue
 
-            in_datetime = _parse_time_to_datetime(in_time_str, race_date) if in_time_str else None
-            out_datetime = _parse_time_to_datetime(out_time_str, race_date) if out_time_str else None
+            in_datetime = (
+                _parse_time_to_datetime(
+                    in_time_str, race_date) if in_time_str else None
+            )
+            out_datetime = (
+                _parse_time_to_datetime(out_time_str, race_date)
+                if out_time_str
+                else None
+            )
 
-            in_elapsed_min = _calculate_elapsed_minutes(in_datetime, race_start_dt)
-            out_elapsed_min = _calculate_elapsed_minutes(out_datetime, race_start_dt)
+            in_elapsed_min = _calculate_elapsed_minutes(
+                in_datetime, race_start_dt)
+            out_elapsed_min = _calculate_elapsed_minutes(
+                out_datetime, race_start_dt)
 
-            all_rows.append({
-                'year': race_year,
-                'bib': bib,
-                'name': name,
-                'gender': None,
-                'age': None,
-                'as_index': as_index,
-                'as_name': as_cols['name'],
-                'as_check_in__tod': in_time_str,
-                'as_check_out__tod': out_time_str,
-                'as_check_in__elapsed': None,
-                'as_check_out__elapsed': None,
-                'race_datetime': race_start_dt.strftime("%m/%d/%Y %H:%M"),
-                'as_check_in__tod__datetime': in_datetime.strftime("%m/%d/%Y %H:%M") if in_datetime else None,
-                'as_check_in__elapsed__min': in_elapsed_min,
-                'as_check_out__tod__datetime': out_datetime.strftime("%m/%d/%Y %H:%M") if out_datetime else None,
-                'as_check_out__elapsed__min': out_elapsed_min,
-                'as_dist_from_start': None,
-                'as_dist_incr': None,
-            })
+            all_rows.append(
+                {
+                    "year": race_year,
+                    "bib": bib,
+                    "name": name,
+                    "gender": None,
+                    "age": None,
+                    "race_date": race_date,
+                    "as_index": as_index,
+                    "as_name": as_cols["name"],
+                    "as_check_in__tod": in_time_str,
+                    "as_check_out__tod": out_time_str,
+                    "as_check_in__elapsed": None,
+                    "as_check_out__elapsed": None,
+                    "race_datetime": race_start_dt.strftime("%m/%d/%Y %H:%M"),
+                    "as_check_in__tod__datetime": in_datetime.strftime("%m/%d/%Y %H:%M")
+                    if in_datetime
+                    else None,
+                    "as_check_in__elapsed__min": in_elapsed_min,
+                    "as_check_out__tod__datetime": out_datetime.strftime(
+                        "%m/%d/%Y %H:%M"
+                    )
+                    if out_datetime
+                    else None,
+                    "as_check_out__elapsed__min": out_elapsed_min,
+                    "as_dist_from_start": None,
+                    "as_dist_incr": None,
+                }
+            )
 
         if (row_idx + 1) % 50 == 0:
             logger.info(f"Processed {row_idx + 1} runners...")
@@ -453,26 +499,32 @@ def _reshape_wide_to_long(
     # The new all-years file uses "AS_01" index format and includes a year column,
     # so filter to the correct year and normalise to match the "AS1" format produced
     # by _parse_aid_station_columns. Finish stations are identified by flag_finish.
-    as_meta_clean = (
-        as_metadata
-        .filter(pl.col('year') == race_year)
-        .select([
-            pl.when(pl.col('flag_finish') == 'TRUE')
-            .then(pl.lit('FINISH'))
+    as_meta_clean = as_metadata.filter(pl.col("year") == race_year).select(
+        [
+            pl.when(pl.col("flag_finish") == "TRUE")
+            .then(pl.lit("FINISH"))
             .otherwise(
-                pl.lit('AS') + pl.col('as_index').str.split('_').list.last().cast(pl.Int32).cast(pl.String)
+                pl.lit("AS")
+                + pl.col("as_index")
+                .str.split("_")
+                .list.last()
+                .cast(pl.Int32)
+                .cast(pl.String)
             )
-            .alias('as_index'),
-            pl.col('dist_from_start').alias('as_dist_from_start'),
-            pl.col('as_dist').alias('as_dist_incr'),
-        ])
+            .alias("as_index"),
+            pl.col("dist_from_start").alias("as_dist_from_start"),
+            pl.col("as_dist").alias("as_dist_incr"),
+        ]
     )
-    df_long = df_long.join(as_meta_clean, on='as_index', how='left', suffix='_meta')
-    if 'as_dist_from_start_meta' in df_long.columns:
-        df_long = df_long.drop(['as_dist_from_start', 'as_dist_incr']).rename({
-            'as_dist_from_start_meta': 'as_dist_from_start',
-            'as_dist_incr_meta': 'as_dist_incr',
-        })
+    df_long = df_long.join(as_meta_clean, on="as_index",
+                           how="left", suffix="_meta")
+    if "as_dist_from_start_meta" in df_long.columns:
+        df_long = df_long.drop(["as_dist_from_start", "as_dist_incr"]).rename(
+            {
+                "as_dist_from_start_meta": "as_dist_from_start",
+                "as_dist_incr_meta": "as_dist_incr",
+            }
+        )
 
     logger.info(f"Final long format shape: {df_long.shape}")
     return df_long
@@ -495,21 +547,81 @@ def process_2025_data(df: pl.DataFrame, as_metadata: pl.DataFrame) -> pl.DataFra
     race_date = "2025-08-09"
     race_year = 2025
 
-    logger.info(f"Starting preprocessing of 2025 data: {df.shape[0]} rows, {df.shape[1]} columns")
+    logger.info(
+        f"Starting preprocessing of 2025 data: {df.shape[0]} rows, {df.shape[1]} columns"
+    )
 
     try:
         if df.is_empty():
             raise ValueError("Input dataframe is empty")
 
         parsed_cols = _parse_aid_station_columns(df.columns)
-        df_long = _reshape_wide_to_long(df, parsed_cols, as_metadata, race_date, race_year)
+        df_long = _reshape_wide_to_long(
+            df, parsed_cols, as_metadata, race_date, race_year
+        )
 
-        logger.info(f"Successfully processed 2025 data. Final shape: {df_long.shape[0]} rows, {df_long.shape[1]} columns")
+        logger.info(
+            f"Successfully processed 2025 data. Final shape: {df_long.shape[0]} rows, {df_long.shape[1]} columns"
+        )
         return df_long
 
     except Exception as e:
         logger.error(f"Error during 2025 preprocessing: {str(e)}")
         raise
+
+
+_COMBINED_COLUMN_ORDER = [
+    "year", "bib", "name", "gender", "age", "race_date",
+    "as_index", "as_name",
+    "as_check_in__tod", "as_check_out__tod",
+    "as_check_in__elapsed", "as_check_out__elapsed",
+    "race_datetime",
+    "as_check_in__tod__datetime", "as_check_in__elapsed__min",
+    "as_check_out__tod__datetime", "as_check_out__elapsed__min",
+    "as_dist_from_start", "as_dist_incr",
+]
+
+
+def combine_processed_data(
+    df_legacy: pl.DataFrame, df_2025: pl.DataFrame
+) -> pl.DataFrame:
+    """
+    Combine legacy (2016-2017) and 2025 processed data into one dataset.
+
+    Casts Null-typed columns in 2025 to match legacy schema types, fills
+    columns missing from either source with nulls, and returns rows in a
+    canonical column order.
+
+    Args:
+        df_legacy: Processed 2016-2017 data (es_processed_20162017)
+        df_2025: Processed 2025 data (es_processed_2025)
+
+    Returns:
+        Combined DataFrame with canonical column order
+    """
+    if hasattr(df_legacy, "collect"):
+        df_legacy = df_legacy.collect()
+    if hasattr(df_2025, "collect"):
+        df_2025 = df_2025.collect()
+
+    logger.info(
+        f"Combining legacy ({df_legacy.shape[0]} rows) "
+        f"and 2025 ({df_2025.shape[0]} rows) datasets"
+    )
+
+    # Cast Null-typed columns in 2025 to match legacy schema
+    df_2025 = df_2025.with_columns(
+        pl.col("gender").cast(pl.String),
+        pl.col("age").cast(pl.Int64),
+        pl.col("as_check_in__elapsed").cast(pl.String),
+        pl.col("as_check_out__elapsed").cast(pl.String),
+    )
+
+    combined = pl.concat([df_legacy, df_2025], how="diagonal_relaxed")
+    combined = combined.select(_COMBINED_COLUMN_ORDER)
+
+    logger.info(f"Combined dataset: {combined.shape[0]} rows, {combined.shape[1]} columns")
+    return combined
 
 
 def flag_negative_elapsed_times(
@@ -541,7 +653,8 @@ def flag_negative_elapsed_times(
     num_flagged = flagged_collected.shape[0]
 
     if num_flagged > 0:
-        logger.warning(f"Found {num_flagged} runners with negative elapsed times:")
+        logger.warning(
+            f"Found {num_flagged} runners with negative elapsed times:")
         for row in flagged_collected.iter_rows(named=True):
             logger.warning(f"  - Bib: {row['bib']}, Year: {row['year']}")
     else:
@@ -556,89 +669,102 @@ def flag_negative_elapsed_times(
 
 def visualize_elapsed_times_by_runner(
     df: pl.DataFrame,
-    elapsed_col: str = "as_check_in__elapsed__min",
     index_col: str = "as_dist_from_start",
 ) -> go.Figure:
     """
-    Create line charts showing elapsed times by runner, with separate subplots per year.
-    Flagged runners (with timing errors) are shown in red, others in grey.
+    Create a grid of line charts (num_years rows x 2 cols) showing elapsed
+    time per runner at each aid station. Left column = check-in elapsed,
+    right column = check-out elapsed.
 
     Args:
-        df: Input dataframe with timing data and flags
-        elapsed_col: Name of elapsed time column for y-axis
-        index_col: Name of index column for x-axis (aid station index)
+        df: Combined input dataframe with timing data
+        index_col: Column for x-axis (distance from start)
 
     Returns:
-        Plotly Figure object with subplots (one per year)
+        Plotly Figure with one row per year and two columns (in / out)
     """
     logger.info("Creating elapsed time visualization...")
 
-    # Check required columns exist
-    required_cols = [elapsed_col, index_col, "bib", "year"]
-    missing_cols = [
-        col for col in required_cols if col not in df.collect_schema().names()
-    ]
+    if hasattr(df, "collect"):
+        df = df.collect()
+
+    check_in_col = "as_check_in__elapsed__min"
+    check_out_col = "as_check_out__elapsed__min"
+
+    required_cols = [index_col, check_in_col, check_out_col, "bib", "year"]
+    missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
 
-    # Get unique non-null years and sort
-    years = df.select("year").collect().drop_nulls().unique().to_series().sort()
+    years = df.select("year").drop_nulls().unique().to_series().sort()
     num_years = len(years)
 
-    logger.info(f"Creating {num_years} subplots for years: {years}")
+    logger.info(f"Creating {num_years}x2 subplots for years: {years.to_list()}")
 
-    # Create subplots - one per year
+    subplot_titles = [title for year in years for title in (f"{year} — In", f"{year} — Out")]
+
     fig = make_subplots(
         rows=num_years,
-        cols=1,
-        subplot_titles=[f"Year {year}" for year in years],
-        vertical_spacing=0.1,
+        cols=2,
+        subplot_titles=subplot_titles,
+        vertical_spacing=0.08,
+        horizontal_spacing=0.06,
     )
 
-    # Process each year
     for idx, year in enumerate(years, start=1):
         year_data = df.filter(pl.col("year") == year)
-
-        # Get unique runners for this year
-        runners = list(
-            year_data.select("bib").unique().sort(by="bib").collect().to_series()
-        )
+        runners = year_data.select("bib").unique().sort(by="bib").to_series().to_list()
 
         logger.info(f"Year {year}: Processing {len(runners)} runners")
 
-        # Plot each runner
         for bib in runners:
-            runner_data = year_data.filter(pl.col("bib") == bib).sort(index_col)
-
-            # Convert to pandas for plotly (plotly doesn't support polars directly)
             runner_pd = (
-                runner_data.select([index_col, elapsed_col]).collect().to_pandas()
+                year_data.filter(pl.col("bib") == bib)
+                .sort(index_col)
+                .select([index_col, check_in_col, check_out_col])
+                .to_pandas()
             )
 
-            # Add trace
             fig.add_trace(
                 go.Scatter(
                     x=runner_pd[index_col],
-                    y=runner_pd[elapsed_col],
+                    y=runner_pd[check_in_col],
                     mode="lines+markers",
-                    hovertemplate=f"Bib: {bib}<br>AS Index: %{{x}}<br>Elapsed: %{{y:.2f}} min<extra></extra>",
+                    showlegend=False,
+                    hovertemplate=(
+                        f"Bib: {bib}<br>Distance: %{{x}}<br>"
+                        "Elapsed In: %{y:.2f} min<extra></extra>"
+                    ),
                 ),
                 row=idx,
                 col=1,
             )
 
-        # Update axes for this subplot
-        fig.update_xaxes(title_text="Aid Station Index", row=idx, col=1)
-        fig.update_yaxes(title_text="Elapsed Time (min)", row=idx, col=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=runner_pd[index_col],
+                    y=runner_pd[check_out_col],
+                    mode="lines+markers",
+                    showlegend=False,
+                    hovertemplate=(
+                        f"Bib: {bib}<br>Distance: %{{x}}<br>"
+                        "Elapsed Out: %{y:.2f} min<extra></extra>"
+                    ),
+                ),
+                row=idx,
+                col=2,
+            )
 
-    # Update overall layout
+        for col in (1, 2):
+            fig.update_xaxes(title_text="Distance from Start (mi)", row=idx, col=col)
+            fig.update_yaxes(title_text="Elapsed Time (min)", row=idx, col=col)
+
     fig.update_layout(
-        height=400 * num_years,  # Scale height with number of years
-        title_text="Runner Elapsed Times by Aid Station (Flagged Runners in Red)",
-        showlegend=True,
+        height=450 * num_years,
+        title_text="Runner Elapsed Times by Aid Station — Check-In (left) vs Check-Out (right)",
+        showlegend=False,
         hovermode="closest",
     )
 
     logger.info("Visualization created successfully")
-
     return fig

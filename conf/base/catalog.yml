@@ -56,6 +56,11 @@ es_processed_2025:
   filepath: data/02_intermediate/es_2025_processed.pq
   file_format: parquet
 
+es_processed_combined:
+  type: polars.LazyPolarsDataset
+  filepath: data/02_intermediate/es_combined_processed.pq
+  file_format: parquet
+
 es_timing_validation_plot:
   type: plotly.JSONDataset
   filepath: data/08_reporting/timing_validation_plot.json
