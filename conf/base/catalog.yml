@@ -27,7 +27,7 @@ es_splits_20167:
 
 es_asinfo_historical:
   type: polars.CSVDataset
-  filepath: data/01_raw/ES100_2016-2017_asinfo.csv
+  filepath: data/01_raw/es100_all_as_info.csv
   load_args:
     separator: ","
 
