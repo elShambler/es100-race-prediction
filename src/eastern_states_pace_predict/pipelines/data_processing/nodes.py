@@ -8,7 +8,6 @@ from plotly.subplots import make_subplots
 
 # Constants for 2025 data processing
 _RACE_START_TIME = "05:00"
-_RACE_START_TIME_PARSED = datetime.strptime(_RACE_START_TIME, "%H:%M").time()
 _MISSING_TIME_MARKER = "__:__"
 
 logger = logging.getLogger(__name__)
@@ -357,19 +356,19 @@ def _normalize_time_string(time_str: str) -> str | None:
         return None
 
 
-def _parse_time_to_datetime(time_str: str, race_date: str) -> datetime | None:
-    """
-    Convert a HH:MM:SS time string and race date to a datetime.
-    Times before 05:00 are assumed to be post-midnight (next day).
+def _parse_time_to_datetime(
+    time_str: str, race_date: str, day_offset: int = 0
+) -> datetime | None:
+    """Convert a HH:MM:SS time string and race date to a datetime.
+
+    day_offset is supplied by the caller and accumulates whenever a midnight
+    crossing is detected between consecutive checkpoints.
     """
     if not time_str:
         return None
     try:
         dt = datetime.strptime(f"{race_date} {time_str}", "%Y-%m-%d %H:%M:%S")
-        time_only = datetime.strptime(time_str, "%H:%M:%S").time()
-        if time_only < _RACE_START_TIME_PARSED:
-            dt += timedelta(days=1)
-        return dt
+        return dt + timedelta(days=day_offset)
     except Exception as e:
         logger.warning(f"Error parsing time to datetime '{time_str}': {e}")
         return None
@@ -416,15 +415,34 @@ def _reshape_wide_to_long(
 
     logger.info(f"Found {len(aid_stations)} unique aid stations")
 
+    # Build a distance lookup so aid stations are visited in course order,
+    # which is required for the midnight-crossing detection below.
+    dist_lookup: dict[str, float] = {}
+    for meta_row in as_metadata.filter(pl.col("year") == race_year).iter_rows(named=True):
+        if meta_row.get("flag_finish") == "TRUE":
+            key = "FINISH"
+        else:
+            num = int(meta_row["as_index"].split("_")[-1])
+            key = f"AS{num}"
+        dist_lookup[key] = float(meta_row["dist_from_start"])
+
+    sorted_stations = sorted(
+        ((k, v) for k, v in aid_stations.items() if k != "START"),
+        key=lambda x: dist_lookup.get(x[0], float("inf")),
+    )
+
     all_rows = []
     for row_idx, runner_row in enumerate(df_wide.iter_rows(named=True)):
         bib = runner_row.get("Bib")
         name = runner_row.get("Name", "")
 
-        for as_index, as_cols in aid_stations.items():
-            if as_index == "START":
-                continue
+        # Track the last confirmed datetime and accumulated day offset per runner.
+        # Whenever a parsed checkpoint time falls before last_dt we have crossed
+        # midnight: increment day_offset and re-parse so the timeline stays monotonic.
+        last_dt = race_start_dt
+        day_offset = 0
 
+        for as_index, as_cols in sorted_stations:
             in_col = as_cols.get("in")
             out_col = as_cols.get("out")
             in_time_raw = (
@@ -444,20 +462,26 @@ def _reshape_wide_to_long(
             if not in_time_str and not out_time_str:
                 continue
 
-            in_datetime = (
-                _parse_time_to_datetime(
-                    in_time_str, race_date) if in_time_str else None
-            )
-            out_datetime = (
-                _parse_time_to_datetime(out_time_str, race_date)
-                if out_time_str
-                else None
-            )
+            in_datetime = None
+            if in_time_str:
+                in_datetime = _parse_time_to_datetime(in_time_str, race_date, day_offset)
+                if in_datetime is not None and in_datetime < last_dt:
+                    day_offset += 1
+                    in_datetime = _parse_time_to_datetime(in_time_str, race_date, day_offset)
+                if in_datetime is not None:
+                    last_dt = in_datetime
 
-            in_elapsed_min = _calculate_elapsed_minutes(
-                in_datetime, race_start_dt)
-            out_elapsed_min = _calculate_elapsed_minutes(
-                out_datetime, race_start_dt)
+            out_datetime = None
+            if out_time_str:
+                out_datetime = _parse_time_to_datetime(out_time_str, race_date, day_offset)
+                if out_datetime is not None and out_datetime < last_dt:
+                    day_offset += 1
+                    out_datetime = _parse_time_to_datetime(out_time_str, race_date, day_offset)
+                if out_datetime is not None:
+                    last_dt = out_datetime
+
+            in_elapsed_min = _calculate_elapsed_minutes(in_datetime, race_start_dt)
+            out_elapsed_min = _calculate_elapsed_minutes(out_datetime, race_start_dt)
 
             all_rows.append(
                 {
