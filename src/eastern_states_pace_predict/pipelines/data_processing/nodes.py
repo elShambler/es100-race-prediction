@@ -449,12 +449,24 @@ def _reshape_wide_to_long(
     logger.info(f"Created {len(all_rows)} total checkpoint records")
     df_long = pl.DataFrame(all_rows)
 
-    # Join aid station distances from metadata
-    as_meta_clean = as_metadata.select([
-        pl.col('as_index').str.to_uppercase().alias('as_index'),
-        pl.col('as_cum_dist').alias('as_dist_from_start'),
-        pl.col('as_dist').alias('as_dist_incr'),
-    ])
+    # Join aid station distances from metadata.
+    # The new all-years file uses "AS_01" index format and includes a year column,
+    # so filter to the correct year and normalise to match the "AS1" format produced
+    # by _parse_aid_station_columns. Finish stations are identified by flag_finish.
+    as_meta_clean = (
+        as_metadata
+        .filter(pl.col('year') == race_year)
+        .select([
+            pl.when(pl.col('flag_finish') == 'TRUE')
+            .then(pl.lit('FINISH'))
+            .otherwise(
+                pl.lit('AS') + pl.col('as_index').str.split('_').list.last().cast(pl.Int32).cast(pl.String)
+            )
+            .alias('as_index'),
+            pl.col('dist_from_start').alias('as_dist_from_start'),
+            pl.col('as_dist').alias('as_dist_incr'),
+        ])
+    )
     df_long = df_long.join(as_meta_clean, on='as_index', how='left', suffix='_meta')
     if 'as_dist_from_start_meta' in df_long.columns:
         df_long = df_long.drop(['as_dist_from_start', 'as_dist_incr']).rename({
