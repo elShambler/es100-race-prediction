@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Kedro 1.0 project analyzing Eastern States 100 mile foot race data (2016-2023+). The project processes historical split times and finish data from multiple years with varying data formats and quality.
+This is a Kedro 1.0 project analyzing Eastern States 100 mile foot race data (2016-2025+). The project processes historical split times and finish data from multiple years with varying data formats and quality.
 
 ## Core Commands
 
@@ -20,13 +20,13 @@ pip install -r requirements.txt
 ### Running Pipelines
 ```bash
 # Run all pipelines
-kedro run
+uv run kedro run
 
 # Run specific pipeline
-kedro run --pipeline data_processing
+uv run kedro run --pipeline data_processing
 
 # Run specific node
-kedro run --node preprocess_ultralive_node
+uv run kedro run --node preprocess_ultralive_node
 ```
 
 ### Testing
@@ -49,19 +49,19 @@ ruff check .
 ### Jupyter/Interactive Development
 ```bash
 # Start Jupyter notebook (provides catalog, context, pipelines, session in scope)
-kedro jupyter notebook
+uv run kedro jupyter notebook
 
 # Start JupyterLab
-kedro jupyter lab
+uv run kedro jupyter lab
 
 # Start IPython session
-kedro ipython
+uv run kedro ipython
 ```
 
 ### Visualization
 ```bash
 # Launch Kedro Viz to visualize pipelines
-kedro viz
+uv run kedro viz
 ```
 
 ## Architecture
