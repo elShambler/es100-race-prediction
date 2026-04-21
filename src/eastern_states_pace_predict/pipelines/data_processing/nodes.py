@@ -561,6 +561,12 @@ def process_2025_data(df: pl.DataFrame, as_metadata: pl.DataFrame) -> pl.DataFra
     The 2025 data has one row per runner with aid station columns, predominantly
     with check-out times. Converts to long format matching other years' structure.
 
+    Data quality notes (applied directly to ES100_2025_splits.csv):
+    - Ramsey AS-2 In: 29 values corrected from PM to AM (transcription errors).
+    - Ritchie Road AS-6, Hyner Run AS-7, Big Trail AS-9, Cedar Run AS-11 In
+      columns were sparsely populated (≤10 runners each) and have been nulled
+      out in the source file; check-out times for those stations are retained.
+
     Args:
         df: Raw wide-format DataFrame from ES100_2025_splits.csv
         as_metadata: Aid station metadata with distances (es_asinfo_historical)
