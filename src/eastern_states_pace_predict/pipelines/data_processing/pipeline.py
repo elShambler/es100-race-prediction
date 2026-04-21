@@ -3,6 +3,7 @@ from .nodes import (
     preprocess_20162017_data,
     process_2025_data,
     combine_processed_data,
+    join_finish_times,
     flag_negative_elapsed_times,
     visualize_elapsed_times_by_runner,
 )
@@ -28,6 +29,12 @@ def create_pipeline(**kwargs) -> Pipeline:
                 inputs=["es_processed_20162017", "es_processed_2025"],
                 outputs="es_processed_combined",
                 name="combine_processed_data_node",
+            ),
+            node(
+                func=join_finish_times,
+                inputs=["es_processed_combined", "es_finish_times"],
+                outputs="es_splits_with_finish",
+                name="join_finish_times_node",
             ),
             node(
                 func=flag_negative_elapsed_times,

@@ -654,6 +654,45 @@ def combine_processed_data(
     return combined
 
 
+def join_finish_times(df_splits: pl.DataFrame, df_finish: "pd.DataFrame") -> pl.DataFrame:
+    """
+    Join finish time data onto the combined split records using bib and year.
+
+    A left join is used so every split row is retained regardless of whether
+    the runner finished. The finish dataset uses 'race_year'; it is renamed
+    to 'year' before joining. Columns already present in the split data
+    (name, gender, age) are excluded from the finish side to avoid duplicates.
+
+    Args:
+        df_splits: Combined split records (es_processed_combined)
+        df_finish: Raw finish times loaded from es100_finish_times.xlsx
+
+    Returns:
+        Split records with finish columns appended for matched runners
+    """
+    if hasattr(df_splits, "collect"):
+        df_splits = df_splits.collect()
+
+    finish_cols = [
+        "race_year", "bib", "official_rank", "city",
+        "finish_status", "finish_time",
+        "finish_elapsed_days", "finish_elapsed_hrs", "finish_elapsed_mins",
+    ]
+    df_finish_pl = (
+        pl.from_pandas(df_finish[finish_cols])
+        .rename({"race_year": "year"})
+    )
+
+    result = df_splits.join(df_finish_pl, on=["bib", "year"], how="left")
+
+    matched = result.filter(pl.col("finish_status").is_not_null()).select("bib").unique().shape[0]
+    logger.info(
+        f"Joined finish data: {df_splits.select('bib').unique().shape[0]} unique runners in splits, "
+        f"{matched} matched to finish records"
+    )
+    return result
+
+
 def flag_negative_elapsed_times(
     df: pl.DataFrame, elapsed_col: str = "as_check_in__elapsed__min"
 ) -> pl.DataFrame:

@@ -56,9 +56,18 @@ es_processed_2025:
   filepath: data/02_intermediate/es_2025_processed.pq
   file_format: parquet
 
+es_finish_times:
+  type: pandas.ExcelDataset
+  filepath: data/01_raw/es100_finish_times.xlsx
+
 es_processed_combined:
   type: polars.LazyPolarsDataset
   filepath: data/02_intermediate/es_combined_processed.pq
+  file_format: parquet
+
+es_splits_with_finish:
+  type: polars.LazyPolarsDataset
+  filepath: data/02_intermediate/es_splits_with_finish.pq
   file_format: parquet
 
 es_timing_validation_plot:
