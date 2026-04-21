@@ -654,7 +654,7 @@ def combine_processed_data(
     return combined
 
 
-def join_finish_times(df_splits: pl.DataFrame, df_finish: "pd.DataFrame") -> pl.DataFrame:
+def join_finish_times(df_splits: pl.DataFrame, df_finish: pl.DataFrame) -> pl.DataFrame:
     """
     Join finish time data onto the combined split records using bib and year.
 
@@ -665,7 +665,7 @@ def join_finish_times(df_splits: pl.DataFrame, df_finish: "pd.DataFrame") -> pl.
 
     Args:
         df_splits: Combined split records (es_processed_combined)
-        df_finish: Raw finish times loaded from es100_finish_times.xlsx
+        df_finish: Finish times loaded from es100_finish_times.xlsx
 
     Returns:
         Split records with finish columns appended for matched runners
@@ -678,10 +678,7 @@ def join_finish_times(df_splits: pl.DataFrame, df_finish: "pd.DataFrame") -> pl.
         "finish_status", "finish_time",
         "finish_elapsed_days", "finish_elapsed_hrs", "finish_elapsed_mins",
     ]
-    df_finish_pl = (
-        pl.from_pandas(df_finish[finish_cols])
-        .rename({"race_year": "year"})
-    )
+    df_finish_pl = df_finish.select(finish_cols).rename({"race_year": "year"})
 
     result = df_splits.join(df_finish_pl, on=["bib", "year"], how="left")
 

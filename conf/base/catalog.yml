@@ -57,7 +57,7 @@ es_processed_2025:
   file_format: parquet
 
 es_finish_times:
-  type: pandas.ExcelDataset
+  type: eastern_states_pace_predict.datasets.polars_excel_dataset.PolarsExcelDataset
   filepath: data/01_raw/es100_finish_times.xlsx
 
 es_processed_combined:
