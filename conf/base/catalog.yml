@@ -70,6 +70,11 @@ es_splits_with_finish:
   filepath: data/02_intermediate/es_splits_with_finish.pq
   file_format: parquet
 
+es_features:
+  type: polars.LazyPolarsDataset
+  filepath: data/04_feature/es_features.pq
+  file_format: parquet
+
 es_timing_validation_plot:
   type: plotly.JSONDataset
   filepath: data/08_reporting/timing_validation_plot.json
