@@ -656,36 +656,61 @@ def combine_processed_data(
 
 def join_finish_times(df_splits: pl.DataFrame, df_finish: pl.DataFrame) -> pl.DataFrame:
     """
-    Join finish time data onto the combined split records using bib and year.
+    Combine split records with finish data, preserving all rows from both sides.
 
-    A left join is used so every split row is retained regardless of whether
-    the runner finished. The finish dataset uses 'race_year'; it is renamed
-    to 'year' before joining. Columns already present in the split data
-    (name, gender, age) are excluded from the finish side to avoid duplicates.
+    Two steps:
+    1. Left-join finish columns onto every split row (all splits kept, finish
+       data attached where the runner appears in the finish file).
+    2. Append finishers who have no split records at all (years with no split
+       data, or runners absent from the splits source) so they are not lost.
+
+    The finish dataset uses 'race_year'; it is renamed to 'year' before
+    joining. name/gender/age are excluded from the finish join columns to
+    avoid conflicts with the same columns already in the split data, but are
+    included for the finish-only rows where split columns are all null.
 
     Args:
         df_splits: Combined split records (es_processed_combined)
         df_finish: Finish times loaded from es100_finish_times.xlsx
 
     Returns:
-        Split records with finish columns appended for matched runners
+        DataFrame with split rows annotated with finish data, plus one row
+        per finisher who had no split records.
     """
     if hasattr(df_splits, "collect"):
         df_splits = df_splits.collect()
 
-    finish_cols = [
+    # Finish columns to join onto existing split rows (excludes name/gender/age
+    # which are already present in the splits to avoid duplicate columns)
+    finish_join_cols = [
         "race_year", "bib", "official_rank", "city",
         "finish_status", "finish_time",
         "finish_elapsed_days", "finish_elapsed_hrs", "finish_elapsed_mins",
     ]
-    df_finish_pl = df_finish.select(finish_cols).rename({"race_year": "year"})
+    df_finish_join = df_finish.select(finish_join_cols).rename({"race_year": "year"})
 
-    result = df_splits.join(df_finish_pl, on=["bib", "year"], how="left")
+    splits_with_finish = df_splits.join(df_finish_join, on=["bib", "year"], how="left")
 
-    matched = result.filter(pl.col("finish_status").is_not_null()).select("bib").unique().shape[0]
+    # Finish-only rows: finishers with no split records (include name/gender/age
+    # from the finish table since split columns will be null for these rows)
+    finish_only_cols = [
+        "race_year", "bib", "name", "gender", "age", "official_rank", "city",
+        "finish_status", "finish_time",
+        "finish_elapsed_days", "finish_elapsed_hrs", "finish_elapsed_mins",
+    ]
+    df_finish_full = df_finish.select(finish_only_cols).rename({"race_year": "year"})
+
+    splits_keys = df_splits.select(["bib", "year"]).unique()
+    finishers_only = df_finish_full.join(splits_keys, on=["bib", "year"], how="anti")
+
+    result = pl.concat([splits_with_finish, finishers_only], how="diagonal_relaxed")
+
+    n_splits_runners = df_splits.select("bib").unique().shape[0]
+    n_matched = splits_with_finish.filter(pl.col("finish_status").is_not_null()).select("bib").unique().shape[0]
+    n_finish_only = finishers_only.shape[0]
     logger.info(
-        f"Joined finish data: {df_splits.select('bib').unique().shape[0]} unique runners in splits, "
-        f"{matched} matched to finish records"
+        f"Split runners: {n_splits_runners} | matched to finish: {n_matched} | "
+        f"finish-only rows appended: {n_finish_only} | total rows: {result.shape[0]}"
     )
     return result
 
