@@ -70,6 +70,12 @@ es_splits_with_finish:
   filepath: data/02_intermediate/es_splits_with_finish.pq
   file_format: parquet
 
+es_runner_timing_plot:
+  type: plotly.JSONDataset
+  filepath: data/08_reporting/es_runner_timing_plot.json
+  save_args:
+    engine: json
+
 es_timing_corrected:
   type: polars.LazyPolarsDataset
   filepath: data/04_feature/es_timing_corrected.pq

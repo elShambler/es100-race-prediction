@@ -1,5 +1,6 @@
 import logging
 
+import plotly.graph_objects as go
 import polars as pl
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,86 @@ def fix_timing_violations(df: pl.DataFrame) -> pl.DataFrame:
     result = pl.concat([splits, finish_only], how="diagonal_relaxed")
     logger.info(f"Output shape: {result.shape[0]} rows, {result.shape[1]} columns")
     return result
+
+
+_YEAR_COLORS = {
+    2016: "#1f77b4",  # blue
+    2017: "#ff7f0e",  # orange
+    2019: "#9467bd",  # purple
+    2021: "#8c564b",  # brown
+    2022: "#e377c2",  # pink
+    2023: "#7f7f7f",  # grey
+    2025: "#2ca02c",  # green
+}
+
+
+def visualize_runner_timing(df: pl.DataFrame) -> go.Figure:
+    """
+    Line chart of check-in elapsed time (hrs) vs distance from start.
+    One line per runner, colored by year. Intended for Kedro Viz output.
+
+    Args:
+        df: Timing-corrected split + finish data (es_timing_corrected)
+
+    Returns:
+        Plotly Figure with one trace per runner and a year-color legend
+    """
+    if hasattr(df, "collect"):
+        df = df.collect()
+
+    plot_df = df.filter(
+        pl.col("as_index").is_not_null()
+        & pl.col("as_check_in__elapsed__min").is_not_null()
+        & pl.col("as_dist_from_start").is_not_null()
+    )
+
+    years = sorted(plot_df["year"].drop_nulls().unique().to_list())
+    logger.info(f"Plotting {plot_df.select(['bib','year']).unique().shape[0]} runners across years: {years}")
+
+    fig = go.Figure()
+
+    # One dummy trace per year to drive the legend
+    for year in years:
+        color = _YEAR_COLORS.get(year, "#333333")
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None],
+            mode="lines",
+            name=str(year),
+            line=dict(color=color, width=2),
+            showlegend=True,
+        ))
+
+    # One trace per runner
+    for group in plot_df.sort("as_dist_from_start").partition_by(["bib", "year"]):
+        bib = group["bib"][0]
+        year = group["year"][0]
+        color = _YEAR_COLORS.get(year, "#333333")
+
+        fig.add_trace(go.Scatter(
+            x=group["as_dist_from_start"].to_list(),
+            y=(group["as_check_in__elapsed__min"] / 60).to_list(),
+            mode="lines",
+            line=dict(color=color, width=1),
+            opacity=0.45,
+            showlegend=False,
+            hovertemplate=(
+                f"Bib: {bib} | Year: {year}<br>"
+                "Distance: %{x:.1f} mi<br>"
+                "Elapsed: %{y:.2f} hrs<extra></extra>"
+            ),
+        ))
+
+    fig.update_layout(
+        title="Runner Elapsed Time by Distance from Start",
+        xaxis_title="Distance from Start (mi)",
+        yaxis_title="Elapsed Time (hrs)",
+        height=650,
+        hovermode="closest",
+        legend_title="Year",
+    )
+
+    logger.info("Runner timing visualization created")
+    return fig
 
 
 def build_features(df: pl.DataFrame) -> pl.DataFrame:
