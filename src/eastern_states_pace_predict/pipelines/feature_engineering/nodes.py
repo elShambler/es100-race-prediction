@@ -195,11 +195,219 @@ def visualize_runner_timing(df: pl.DataFrame) -> go.Figure:
     return fig
 
 
+def detect_segment_pace_issues(df: pl.DataFrame, params: dict) -> pl.DataFrame:
+    """
+    Layer 1 — Segment pace check.
+
+    For each runner, compute the pace (min/mile) between consecutive check-in
+    times sorted by distance. Two flag values are added per row:
+      - segment_pace_min_per_mile: pace from the previous station to this one
+        (null for the first station and any station with a missing check-in)
+      - pace_flag: True when pace is outside [floor, ceiling], indicating a
+        physically implausible value or a likely day-offset carry-over error
+
+    Finish-only rows (no as_index) are passed through unchanged.
+
+    Args:
+        df: Timing-corrected data (es_timing_corrected)
+        params: outlier_detection config from parameters_feature_engineering.yml
+    """
+    if hasattr(df, "collect"):
+        df = df.collect()
+
+    floor = params["pace_floor_min_per_mile"]
+    ceiling = params["pace_ceiling_min_per_mile"]
+
+    splits = df.filter(pl.col("as_index").is_not_null())
+    finish_only = df.filter(pl.col("as_index").is_null())
+
+    def _compute_pace(group: pl.DataFrame) -> pl.DataFrame:
+        group = group.sort("as_dist_from_start", nulls_last=True)
+        distances = group["as_dist_from_start"].to_list()
+        elapsed = group["as_check_in__elapsed__min"].to_list()
+        n = len(elapsed)
+
+        paces: list[float | None] = [None] * n
+        flags: list[bool] = [False] * n
+        prev = None
+
+        for i in range(n):
+            if elapsed[i] is None or distances[i] is None:
+                continue
+            if prev is not None:
+                d_delta = distances[i] - distances[prev]
+                t_delta = elapsed[i] - elapsed[prev]
+                if d_delta > 0:
+                    pace = t_delta / d_delta
+                    paces[i] = pace
+                    flags[i] = pace < floor or pace > ceiling
+            prev = i
+
+        return group.with_columns(
+            pl.Series("segment_pace_min_per_mile", paces),
+            pl.Series("pace_flag", flags),
+        )
+
+    splits = pl.concat([_compute_pace(g) for g in splits.partition_by(["bib", "year"])])
+
+    n_flagged = int(splits["pace_flag"].sum())
+    flagged_runners = (
+        splits.filter(pl.col("pace_flag"))
+        .select(["year", "bib", "as_index", "as_dist_from_start", "segment_pace_min_per_mile"])
+        .sort(["year", "bib", "as_dist_from_start"])
+    )
+    logger.info(f"Pace check: {n_flagged} flagged checkpoint(s)")
+    if n_flagged > 0:
+        logger.warning(f"Flagged segments:\n{flagged_runners}")
+
+    return pl.concat([splits, finish_only], how="diagonal_relaxed")
+
+
+def detect_rank_based_outliers(df: pl.DataFrame, params: dict) -> pl.DataFrame:
+    """
+    Layer 2 — Rank-based outlier detection.
+
+    For each (year, as_index) pair with enough runners who have both a
+    check-in time and a finish time, fits a simple linear model:
+
+        check_in_elapsed_min ~ finish_elapsed_mins
+
+    Runners whose residual exceeds rank_outlier_std_threshold standard
+    deviations are flagged. Two columns are added:
+      - rank_residual_min: signed residual in minutes (null if no model exists
+        for that station/year, or runner has no finish time)
+      - rank_outlier_flag: True when |residual| > threshold * residual std dev
+
+    Finish-only rows and runners without finish times are passed through with
+    null residuals and flag=False.
+
+    Args:
+        df: Pace-checked data (es_pace_checked)
+        params: outlier_detection config from parameters_feature_engineering.yml
+    """
+    import numpy as np
+
+    if hasattr(df, "collect"):
+        df = df.collect()
+
+    min_samples = params["rank_model_min_samples"]
+    std_threshold = params["rank_outlier_std_threshold"]
+
+    splits = df.filter(pl.col("as_index").is_not_null()).with_columns(
+        pl.lit(None).cast(pl.Float64).alias("rank_residual_min"),
+        pl.lit(False).alias("rank_outlier_flag"),
+    )
+    finish_only = df.filter(pl.col("as_index").is_null())
+
+    # Fit one linear model per (year, as_index) using runners with both times
+    models: dict[tuple, tuple] = {}
+    for group in (
+        splits.filter(
+            pl.col("as_check_in__elapsed__min").is_not_null()
+            & pl.col("finish_elapsed_mins").is_not_null()
+        ).partition_by(["year", "as_index"])
+    ):
+        if group.shape[0] < min_samples:
+            continue
+        key = (group["year"][0], group["as_index"][0])
+        x = np.array(group["finish_elapsed_mins"].to_list(), dtype=float)
+        y = np.array(group["as_check_in__elapsed__min"].to_list(), dtype=float)
+        slope, intercept = np.polyfit(x, y, 1)
+        residuals = y - (slope * x + intercept)
+        std = residuals.std()
+        if std > 0:
+            models[key] = (slope, intercept, std)
+
+    logger.info(f"Rank model: fitted {len(models)} station-year model(s)")
+
+    # Apply models station by station
+    processed: list[pl.DataFrame] = []
+    for group in splits.partition_by(["year", "as_index"]):
+        key = (group["year"][0], group["as_index"][0])
+        model = models.get(key)
+        if model is None:
+            processed.append(group)
+            continue
+
+        slope, intercept, std = model
+        finish_times = group["finish_elapsed_mins"].to_list()
+        check_in_times = group["as_check_in__elapsed__min"].to_list()
+
+        residuals: list[float | None] = []
+        flags: list[bool] = []
+        for ft, ct in zip(finish_times, check_in_times):
+            if ft is None or ct is None:
+                residuals.append(None)
+                flags.append(False)
+            else:
+                r = ct - (slope * ft + intercept)
+                residuals.append(r)
+                flags.append(abs(r) > std_threshold * std)
+
+        processed.append(group.with_columns(
+            pl.Series("rank_residual_min", residuals, dtype=pl.Float64),
+            pl.Series("rank_outlier_flag", flags, dtype=pl.Boolean),
+        ))
+
+    splits = pl.concat(processed, how="diagonal_relaxed")
+
+    n_flagged = int(splits["rank_outlier_flag"].sum())
+    logger.info(f"Rank model: {n_flagged} flagged checkpoint(s)")
+    if n_flagged > 0:
+        logger.warning(
+            splits.filter(pl.col("rank_outlier_flag"))
+            .select(["year", "bib", "name", "as_index", "as_check_in__elapsed__min", "rank_residual_min"])
+            .sort(["year", "bib"])
+        )
+
+    return pl.concat([splits, finish_only], how="diagonal_relaxed")
+
+
+def flag_cutoff_violations(df: pl.DataFrame, params: dict) -> pl.DataFrame:
+    """
+    Layer 3 — Race cutoff flag.
+
+    Adds an exceeds_cutoff Boolean column that is True when either the
+    check-in or check-out elapsed time exceeds the race cutoff. This is the
+    hardest bound — values above it are physically impossible given the rules.
+
+    Args:
+        df: Rank-checked data (es_rank_checked)
+        params: outlier_detection config from parameters_feature_engineering.yml
+    """
+    if hasattr(df, "collect"):
+        df = df.collect()
+
+    cutoff_min = params["race_cutoff_hours"] * 60
+
+    result = df.with_columns(
+        (
+            (pl.col("as_check_in__elapsed__min") > cutoff_min)
+            | (pl.col("as_check_out__elapsed__min") > cutoff_min)
+        ).fill_null(False).alias("exceeds_cutoff")
+    )
+
+    n_exceeded = int(result["exceeds_cutoff"].sum())
+    if n_exceeded > 0:
+        over = (
+            result.filter(pl.col("exceeds_cutoff"))
+            .select(["year", "bib", "name", "as_index",
+                     "as_check_in__elapsed__min", "as_check_out__elapsed__min"])
+            .unique(subset=["year", "bib", "as_index"])
+            .sort(["year", "bib"])
+        )
+        logger.warning(f"Cutoff flag: {n_exceeded} checkpoint(s) exceed {params['race_cutoff_hours']} hrs:\n{over}")
+    else:
+        logger.info(f"Cutoff flag: no checkpoints exceed the {params['race_cutoff_hours']}-hour cutoff")
+
+    return result
+
+
 def build_features(df: pl.DataFrame) -> pl.DataFrame:
     """
-    Build model features from timing-corrected split + finish data.
+    Build model features from outlier-flagged split + finish data.
 
-    Input:  es_timing_corrected  (data/04_feature)
+    Input:  es_outliers_flagged  (data/04_feature)
     Output: es_features          (data/04_feature)
     """
     if hasattr(df, "collect"):

@@ -76,6 +76,21 @@ es_runner_timing_plot:
   save_args:
     engine: json
 
+es_pace_checked:
+  type: polars.LazyPolarsDataset
+  filepath: data/04_feature/es_pace_checked.pq
+  file_format: parquet
+
+es_rank_checked:
+  type: polars.LazyPolarsDataset
+  filepath: data/04_feature/es_rank_checked.pq
+  file_format: parquet
+
+es_outliers_flagged:
+  type: polars.LazyPolarsDataset
+  filepath: data/04_feature/es_outliers_flagged.pq
+  file_format: parquet
+
 es_timing_corrected:
   type: polars.LazyPolarsDataset
   filepath: data/04_feature/es_timing_corrected.pq

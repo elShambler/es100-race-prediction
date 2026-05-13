@@ -199,6 +199,17 @@ def preprocess_20162017_data(df: pl.DataFrame):
         if "" in df.columns:
             df = df.drop("")
 
+        # The source CSV stores elapsed times in hours (e.g., 1.75 = 1h45m).
+        # Normalize to minutes to match the 2025 data convention.
+        if "as_check_in__elapsed__min" in df.columns:
+            df = df.with_columns(
+                (pl.col("as_check_in__elapsed__min") * 60).alias("as_check_in__elapsed__min")
+            )
+        if "as_check_out__elapsed__min" in df.columns:
+            df = df.with_columns(
+                (pl.col("as_check_out__elapsed__min") * 60).alias("as_check_out__elapsed__min")
+            )
+
         # Log successful modification
         logger.info(
             f"Successfully preprocessed data. Final shape: {df.shape[0]} rows and {df.shape[1]} columns"
