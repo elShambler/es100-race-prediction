@@ -8,7 +8,6 @@ es_splits_historical_2016-17:
   filepath: 'data/01_raw/ES100_2016-2017_splits.csv'
   load_args:
     separator: ","
-    try_parse_dates: True
 
 # 2021-2023 is part of the data used from the ES100 data analytics group
 # 2025 is sourced from Ben Mazure and the ESTEA
@@ -17,7 +16,6 @@ es_splits_2021_2025:
   filepath: 'data/01_raw/ES100_2021-2025_splits.csv'
   load_args:
     separator: ","
-    try_parse_dates: True
 
 # Historical AS info is obtained by scraping the AS info from the ES100 website
 es_asinfo_historical:
@@ -33,4 +31,3 @@ es_finish_historical:
   filepath: data/01_raw/es100_finish_times.csv
   load_args:
     separator: ","
-    try_parse_dates: True
