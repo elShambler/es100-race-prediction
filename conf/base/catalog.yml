@@ -2,107 +2,35 @@
 # All of these are split level data sourced from:
 # Source: Eastern States 100 Data Analytics Group
 
-es_splits_2023:
+# 2016-2017 data is taken from UltraLive
+es_splits_historical_2016-17:
   type: polars.CSVDataset
-  filepath: 'data/01_raw/ES100_2021_allSplits.csv'
-
-#es_splits_2022:
-#  type: pandas.ExcelDataset
-#  filepath: 'data/01_raw/ES100 2022 runner splits.xlsx'
-#  load_args:
-#    sheet_name: 'splits v1 2022-08-18'
-
-#es_splits_2023:
-#  type: pandas.ExcelDataset
-#  filepath: 'data/01_raw/ES100 splits 2023.xlsx'
-#  load_args:
-#    sheet_name: 'rollup'
-
-es_splits_20167:
-  type: polars.CSVDataset
-  filepath: data/01_raw/ES100_2016-2017_splits.csv
+  filepath: 'data/01_raw/ES100_2016-2017_splits.csv'
   load_args:
     separator: ","
     try_parse_dates: True
 
+# 2021-2023 is part of the data used from the ES100 data analytics group
+# 2025 is sourced from Ben Mazure and the ESTEA
+es_splits_2021_2025:
+  type: polars.CSVDataset
+  filepath: 'data/01_raw/ES100_2021-2025_splits.csv'
+  load_args:
+    separator: ","
+    try_parse_dates: True
+
+# Historical AS info is obtained by scraping the AS info from the ES100 website
 es_asinfo_historical:
   type: polars.CSVDataset
   filepath: data/01_raw/es100_all_as_info.csv
   load_args:
     separator: ","
 
+# Finish times are the official race results
+# Majority of the times are from Falcon Race Timing
 es_finish_historical:
   type: polars.CSVDataset
-  filepath: data/01_raw/ES100_2016-2017_finish.csv
-
-es_processed_20162017:
-  type: polars.LazyPolarsDataset
-  filepath: data/02_intermediate/es_20162017_processed.pq
-  file_format: parquet
-
-es_splits_20167_filtered:
-  type: polars.LazyPolarsDataset
-  filepath: data/02_intermediate/es_20162017_filtered.pq
-  file_format: parquet
-
-es_splits_2025:
-  type: polars.CSVDataset
-  filepath: data/01_raw/ES100_2025_splits.csv
+  filepath: data/01_raw/es100_finish_times.csv
   load_args:
     separator: ","
-
-es_processed_2025:
-  type: polars.LazyPolarsDataset
-  filepath: data/02_intermediate/es_2025_processed.pq
-  file_format: parquet
-
-es_finish_times:
-  type: eastern_states_pace_predict.datasets.polars_excel_dataset.PolarsExcelDataset
-  filepath: data/01_raw/es100_finish_times.xlsx
-
-es_processed_combined:
-  type: polars.LazyPolarsDataset
-  filepath: data/02_intermediate/es_combined_processed.pq
-  file_format: parquet
-
-es_splits_with_finish:
-  type: polars.LazyPolarsDataset
-  filepath: data/02_intermediate/es_splits_with_finish.pq
-  file_format: parquet
-
-es_runner_timing_plot:
-  type: plotly.JSONDataset
-  filepath: data/08_reporting/es_runner_timing_plot.json
-  save_args:
-    engine: json
-
-es_pace_checked:
-  type: polars.LazyPolarsDataset
-  filepath: data/04_feature/es_pace_checked.pq
-  file_format: parquet
-
-es_rank_checked:
-  type: polars.LazyPolarsDataset
-  filepath: data/04_feature/es_rank_checked.pq
-  file_format: parquet
-
-es_outliers_flagged:
-  type: polars.LazyPolarsDataset
-  filepath: data/04_feature/es_outliers_flagged.pq
-  file_format: parquet
-
-es_timing_corrected:
-  type: polars.LazyPolarsDataset
-  filepath: data/04_feature/es_timing_corrected.pq
-  file_format: parquet
-
-es_features:
-  type: polars.LazyPolarsDataset
-  filepath: data/04_feature/es_features.pq
-  file_format: parquet
-
-es_timing_validation_plot:
-  type: plotly.JSONDataset
-  filepath: data/08_reporting/timing_validation_plot.json
-  save_args:
-    engine: json
+    try_parse_dates: True
