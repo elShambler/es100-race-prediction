@@ -6,10 +6,6 @@ import plotly.graph_objects as go
 import polars as pl
 from plotly.subplots import make_subplots
 
-# Constants for 2025 data processing
-_RACE_START_TIME = "05:00"
-_MISSING_TIME_MARKER = "__:__"
-
 logger = logging.getLogger(__name__)
 
 
@@ -350,9 +346,9 @@ def _parse_aid_station_columns(columns: list[str]) -> list[dict]:
     return parsed_columns
 
 
-def _normalize_time_string(time_str: str) -> str | None:
+def _normalize_time_string(time_str: str, missing_time_marker: str) -> str | None:
     """Normalize a raw time string to HH:MM:SS, returning None if missing/invalid."""
-    if not time_str or time_str == _MISSING_TIME_MARKER:
+    if not time_str or time_str == missing_time_marker:
         return None
     time_str = time_str.strip()
     try:
@@ -404,12 +400,14 @@ def _reshape_wide_to_long(
     as_metadata: pl.DataFrame,
     race_date: str,
     race_year: int,
+    race_start_time: str,
+    missing_time_marker: str,
 ) -> pl.DataFrame:
     """Reshape wide-format 2025 data to long format matching the 2016-2017 structure."""
     logger.info(f"Reshaping {df_wide.shape[0]} rows from wide to long format")
 
     race_start_dt = datetime.strptime(
-        f"{race_date} {_RACE_START_TIME}", "%Y-%m-%d %H:%M"
+        f"{race_date} {race_start_time}", "%Y-%m-%d %H:%M"
     )
 
     # Group parsed columns by aid station index
@@ -457,18 +455,18 @@ def _reshape_wide_to_long(
             in_col = as_cols.get("in")
             out_col = as_cols.get("out")
             in_time_raw = (
-                runner_row.get(in_col, _MISSING_TIME_MARKER)
+                runner_row.get(in_col, missing_time_marker)
                 if in_col
-                else _MISSING_TIME_MARKER
+                else missing_time_marker
             )
             out_time_raw = (
-                runner_row.get(out_col, _MISSING_TIME_MARKER)
+                runner_row.get(out_col, missing_time_marker)
                 if out_col
-                else _MISSING_TIME_MARKER
+                else missing_time_marker
             )
 
-            in_time_str = _normalize_time_string(in_time_raw)
-            out_time_str = _normalize_time_string(out_time_raw)
+            in_time_str = _normalize_time_string(in_time_raw, missing_time_marker)
+            out_time_str = _normalize_time_string(out_time_raw, missing_time_marker)
 
             if not in_time_str and not out_time_str:
                 continue
@@ -565,7 +563,12 @@ def _reshape_wide_to_long(
     return df_long
 
 
-def process_2025_data(df: pl.DataFrame, as_metadata: pl.DataFrame) -> pl.DataFrame:
+def process_2025_data(
+    df: pl.DataFrame,
+    as_metadata: pl.DataFrame,
+    race_start_time: str,
+    missing_time_marker: str,
+) -> pl.DataFrame:
     """
     Process 2025 Eastern States 100 data from wide format to long format.
 
@@ -598,7 +601,8 @@ def process_2025_data(df: pl.DataFrame, as_metadata: pl.DataFrame) -> pl.DataFra
 
         parsed_cols = _parse_aid_station_columns(df.columns)
         df_long = _reshape_wide_to_long(
-            df, parsed_cols, as_metadata, race_date, race_year
+            df, parsed_cols, as_metadata, race_date, race_year,
+            race_start_time, missing_time_marker,
         )
 
         logger.info(

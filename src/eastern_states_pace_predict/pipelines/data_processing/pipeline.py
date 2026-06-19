@@ -20,7 +20,12 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
             node(
                 func=process_2025_data,
-                inputs=["es_splits_2025", "es_asinfo_historical"],
+                inputs=[
+                    "es_splits_2025",
+                    "es_asinfo_historical",
+                    "params:race_start_time",
+                    "params:missing_time_marker",
+                ],
                 outputs="es_processed_2025",
                 name="preprocess_2025_node",
             ),

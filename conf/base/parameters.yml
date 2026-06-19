@@ -1,0 +1,3 @@
+# Data processing parameters
+race_start_time: "05:00"
+missing_time_marker: "__:__"
