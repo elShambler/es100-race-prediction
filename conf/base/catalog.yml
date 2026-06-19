@@ -16,6 +16,12 @@ es_splits_2021_2025:
   filepath: 'data/01_raw/ES100_2021-2025_splits.csv'
   load_args:
     separator: ","
+    infer_schema_length: 0
+    schema_overrides:
+      year: ${polars:Int64}
+      OriginalOrder: ${polars:Int64}
+      MaxTime: ${polars:Float64}
+      OverallRank: ${polars:Int64}
 
 # Historical AS info is obtained by scraping the AS info from the ES100 website
 es_asinfo_historical:
