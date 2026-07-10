@@ -55,6 +55,14 @@ es_splits_2021_2025_long:
     kedro-viz:
       layer: intermediate
 
+# Pace chart: distance vs elapsed time per runner, year toggle built into the figure
+es_pace_chart:
+  type: plotly.JSONDataset
+  filepath: data/08_reporting/es_pace_chart.json
+  metadata:
+    kedro-viz:
+      layer: reporting
+
 # 2021-2025 splits enriched with elapsed times, AS distances, finish data, and rankings
 es_splits_2021_2025_processed:
   type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset

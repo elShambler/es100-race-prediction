@@ -144,9 +144,18 @@ def enrich_2021_2025_splits(
             ]
         )
 
-    # Arrival: compute seconds, detect midnight crossings, build datetime
+    # Arrival: compute seconds, detect midnight crossings, build datetime.
+    #
+    # Base datetime is midnight of race_date (NOT 05:00). Adding seconds-since-
+    # midnight to midnight gives the correct TOD datetime; subtracting
+    # race_start_datetime then yields the true elapsed time.
+    #
+    # The race has a hard 36-hour cutoff, so only one genuine midnight crossing
+    # is possible. A second apparent backward jump while already on day+1 is an
+    # AM/PM data-entry error — correct that specific row by adding 12 h.
     df = df.sort(["year", "bib", "as_index"]).with_columns(
-        _tod_to_seconds("as_check_in__tod").alias("_arr_s")
+        _tod_to_seconds("as_check_in__tod").alias("_arr_s"),
+        pl.col("race_start_datetime").dt.truncate("1d").alias("_race_midnight"),
     ).with_columns(
         pl.col("_arr_s")
         .shift(1, fill_value=RACE_START_S)
@@ -155,13 +164,28 @@ def enrich_2021_2025_splits(
     ).with_columns(
         (pl.col("_arr_s") < pl.col("_prev_arr_s"))
         .cast(pl.Int32)
+        .alias("_is_arr_cross")
+    ).with_columns(
+        pl.col("_is_arr_cross")
         .cum_sum()
         .over(["year", "bib"])
-        .alias("_arr_day_offset")
+        .alias("_cross_cum")
+    ).with_columns(
+        # Cap day offset at 1 — only one midnight crossing possible in a 36h race
+        pl.col("_cross_cum").clip(upper_bound=1).alias("_arr_day_offset"),
+        # Correct only the row where the second+ crossing was detected, not all
+        # subsequent rows. Rows with _is_arr_cross=0 pass through unchanged even
+        # if _cross_cum is already >= 2.
+        pl.when(
+            (pl.col("_is_arr_cross") == 1) & (pl.col("_cross_cum") >= 2)
+        )
+        .then(pl.col("_arr_s") + 12 * 3600)
+        .otherwise(pl.col("_arr_s"))
+        .alias("_arr_s_corr"),
     ).with_columns(
         (
-            pl.col("race_start_datetime")
-            + pl.duration(seconds=pl.col("_arr_s"))
+            pl.col("_race_midnight")
+            + pl.duration(seconds=pl.col("_arr_s_corr"))
             + pl.duration(days=pl.col("_arr_day_offset"))
         ).alias("as_check_in__tod__datetime")
     ).with_columns(
@@ -169,27 +193,44 @@ def enrich_2021_2025_splits(
         _elapsed_hours("as_check_in__tod__datetime").alias("as_check_in__elapsed__min"),
     )
 
-    # Departure: seed from arrival datetime of same row (departure >= arrival)
+    # Departure: compare against the corrected arrival seconds for the same row.
+    # Same AM/PM rule: if already on day+1 and departure appears before corrected
+    # arrival, add 12 h instead of another day.
     df = df.with_columns(
         pl.when(pl.col("as_check_out__tod").is_not_null())
         .then(_tod_to_seconds("as_check_out__tod"))
         .otherwise(None)
         .alias("_dep_s")
     ).with_columns(
-        # Use arrival seconds as the "previous" reference for departure
         pl.when(pl.col("_dep_s").is_not_null())
         .then(
-            pl.when(pl.col("_dep_s") < pl.col("_arr_s"))
+            pl.when(pl.col("_dep_s") < pl.col("_arr_s_corr"))
+            .then(
+                pl.when(pl.col("_arr_day_offset") >= 1)
+                .then(pl.col("_dep_s") + 12 * 3600)  # AM/PM error: add 12h, no extra day
+                .otherwise(pl.col("_dep_s"))           # genuine midnight crossing: handled below
+            )
+            .otherwise(pl.col("_dep_s"))
+        )
+        .otherwise(None)
+        .alias("_dep_s_corr"),
+        # Extra day only when still on day 0 and departure genuinely crossed midnight
+        pl.when(pl.col("_dep_s").is_not_null())
+        .then(
+            pl.when(
+                (pl.col("_dep_s") < pl.col("_arr_s_corr"))
+                & (pl.col("_arr_day_offset") < 1)
+            )
             .then(pl.lit(1))
             .otherwise(pl.lit(0))
         )
         .otherwise(None)
-        .alias("_dep_day_extra")
+        .alias("_dep_day_extra"),
     ).with_columns(
-        pl.when(pl.col("_dep_s").is_not_null())
+        pl.when(pl.col("_dep_s_corr").is_not_null())
         .then(
-            pl.col("race_start_datetime")
-            + pl.duration(seconds=pl.col("_dep_s"))
+            pl.col("_race_midnight")
+            + pl.duration(seconds=pl.col("_dep_s_corr"))
             + pl.duration(days=pl.col("_arr_day_offset") + pl.col("_dep_day_extra"))
         )
         .otherwise(None)
@@ -203,7 +244,11 @@ def enrich_2021_2025_splits(
         .then(_elapsed_hours("_dep_dt"))
         .otherwise(None)
         .alias("as_check_out__elapsed__min"),
-    ).drop(["_arr_s", "_prev_arr_s", "_arr_day_offset", "_dep_s", "_dep_day_extra", "_dep_dt"])
+    ).drop([
+        "_arr_s", "_prev_arr_s", "_is_arr_cross", "_cross_cum",
+        "_arr_s_corr", "_arr_day_offset", "_race_midnight",
+        "_dep_s", "_dep_s_corr", "_dep_day_extra", "_dep_dt",
+    ])
 
     # e. Join finish_times for demographics and official results
     ft = (
@@ -319,3 +364,88 @@ def enrich_2021_2025_splits(
     # Only include columns that exist (guards against schema drift)
     final_cols = [c for c in ordered_cols if c in df.columns]
     return df.select(final_cols)
+
+
+def plot_pace_chart(df: pl.DataFrame) -> go.Figure:
+    """Scatter-line chart of elapsed time vs distance for each runner.
+
+    Inputs: es_splits_2021_2025_processed
+    Outputs: es_pace_chart (plotly.JSONDataset)
+
+    A year-selector button strip is embedded in the figure so only one year's
+    runners are visible at a time. Defaults to the earliest available year.
+    """
+    years = sorted(df["year"].unique().to_list())
+    default_year = years[0]
+
+    fig = go.Figure()
+    trace_years: list[int] = []
+
+    for year in years:
+        year_df = df.filter(pl.col("year") == year).sort(
+            ["bib", "as_dist_from_start"]
+        )
+        for bib in sorted(year_df["bib"].unique().to_list()):
+            runner = year_df.filter(pl.col("bib") == bib)
+            first_name = runner["name"].drop_nulls().first()
+            label = f"{bib}" if first_name is None else f"{bib} – {first_name}"
+            hover_rows = runner.select(
+                ["as_index", "as_name", "as_check_in__tod",
+                 "as_check_in__elapsed", "as_check_in__tod__datetime"]
+            ).rows()
+            fig.add_trace(
+                go.Scatter(
+                    x=runner["as_dist_from_start"].to_list(),
+                    y=runner["as_check_in__elapsed__min"].to_list(),
+                    mode="lines+markers",
+                    name=label,
+                    visible=(year == default_year),
+                    line=dict(width=1.5),
+                    marker=dict(size=4),
+                    opacity=0.75,
+                    customdata=hover_rows,
+                    hovertemplate=(
+                        "<b>Bib %{fullData.name}</b><br>"
+                        "AS: %{customdata[0]} – %{customdata[1]}<br>"
+                        "TOD: %{customdata[2]}<br>"
+                        "Elapsed: %{customdata[3]}<br>"
+                        "Datetime: %{customdata[4]}<br>"
+                        "Distance: %{x:.1f} mi<br>"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+            trace_years.append(year)
+
+    buttons = [
+        dict(
+            label=str(y),
+            method="update",
+            args=[
+                {"visible": [t == y for t in trace_years]},
+                {"title": f"ES100 Pace Chart — {y}"},
+            ],
+        )
+        for y in years
+    ]
+
+    fig.update_layout(
+        title=f"ES100 Pace Chart — {default_year}",
+        xaxis_title="Distance from Start (miles)",
+        yaxis_title="Elapsed Time (hours)",
+        showlegend=False,
+        height=650,
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="right",
+                buttons=buttons,
+                active=0,
+                x=0.0,
+                xanchor="left",
+                y=1.12,
+                yanchor="top",
+            )
+        ],
+    )
+    return fig
