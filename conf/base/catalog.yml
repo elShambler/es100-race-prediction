@@ -37,3 +37,13 @@ es_finish_historical:
   filepath: data/01_raw/es100_finish_times.csv
   load_args:
     separator: ","
+
+# 2021-2025 splits reshaped to long format (one row per runner × aid station)
+es_splits_2021_2025_long:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_splits_2021_2025_long.csv
+  load_args:
+    infer_schema_length: 0
+  metadata:
+    kedro-viz:
+      layer: intermediate
