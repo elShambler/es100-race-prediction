@@ -2,7 +2,8 @@ version = 1
 revision = 3
 requires-python = ">=3.9"
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "python_full_version == '3.10.*'",
+    "python_full_version < '3.10'",
     "python_full_version == '3.11.*'",
     "python_full_version >= '3.12' and python_full_version < '3.14'",
     "python_full_version >= '3.14'",
@@ -116,7 +117,8 @@ name = "argon2-cffi-bindings"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.11'",
+    "python_full_version == '3.10.*'",
+    "python_full_version < '3.10'",
     "python_full_version == '3.11.*'",
     "python_full_version >= '3.12' and python_full_version < '3.14'",
 ]
@@ -797,7 +799,8 @@ dependencies = [
     { name = "jupyterlab" },
     { name = "kedro", extra = ["jupyter"] },
     { name = "kedro-datasets", extra = ["matplotlib-matplotlibwriter", "pandas-csvdataset", "pandas-exceldataset", "pandas-parquetdataset", "plotly-jsondataset", "plotly-plotlydataset"] },
-    { name = "kedro-viz" },
+    { name = "kedro-viz", version = "12.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "kedro-viz", version = "12.4.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "marimo" },
     { name = "notebook" },
     { name = "pandas" },
@@ -1620,30 +1623,68 @@ wheels = [
 
 [[package]]
 name = "kedro-viz"
-version = "12.0.0"
+version = "12.1.0"
 source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "aiofiles" },
-    { name = "click-default-group" },
-    { name = "fastapi" },
-    { name = "fsspec" },
-    { name = "ipython" },
-    { name = "kedro" },
-    { name = "kedro-telemetry" },
-    { name = "networkx" },
-    { name = "orjson" },
-    { name = "packaging" },
-    { name = "pandas" },
-    { name = "pathspec" },
-    { name = "plotly" },
-    { name = "pydantic" },
-    { name = "secure" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "watchfiles" },
+resolution-markers = [
+    "python_full_version < '3.10'",
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d1/fb/278f4e606134a69ab61a36eb786ea6b72bce71d01258a2c745dca77feccd/kedro_viz-12.0.0.tar.gz", hash = "sha256:7a942a346df047461148eb35206ba359d288487a659197026ede141a2c81d97e", size = 2951693, upload-time = "2025-07-23T10:24:34.208Z" }
+dependencies = [
+    { name = "aiofiles", marker = "python_full_version < '3.10'" },
+    { name = "click-default-group", marker = "python_full_version < '3.10'" },
+    { name = "fastapi", marker = "python_full_version < '3.10'" },
+    { name = "fsspec", marker = "python_full_version < '3.10'" },
+    { name = "ipython", marker = "python_full_version < '3.10'" },
+    { name = "kedro", marker = "python_full_version < '3.10'" },
+    { name = "kedro-telemetry", marker = "python_full_version < '3.10'" },
+    { name = "networkx", marker = "python_full_version < '3.10'" },
+    { name = "orjson", marker = "python_full_version < '3.10'" },
+    { name = "packaging", marker = "python_full_version < '3.10'" },
+    { name = "pandas", marker = "python_full_version < '3.10'" },
+    { name = "pathspec", marker = "python_full_version < '3.10'" },
+    { name = "plotly", marker = "python_full_version < '3.10'" },
+    { name = "pydantic", marker = "python_full_version < '3.10'" },
+    { name = "secure", marker = "python_full_version < '3.10'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version < '3.10'" },
+    { name = "watchfiles", marker = "python_full_version < '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/df/5d/a03300dc5292ede5f64f5d7f72411fa883f666a2eed938968251b5545ac3/kedro_viz-12.1.0.tar.gz", hash = "sha256:77c70813824ccfe0ff8385e82d9bd19eb4d48e5c5174e131ebf361b3acd09546", size = 1855785, upload-time = "2025-09-10T08:40:43.176Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b3/8f/5b383636bb8e13d1ec7240c10b8f97c2e9fd9600157846d9e6ed3f4f8856/kedro_viz-12.0.0-py3-none-any.whl", hash = "sha256:ec5a08f1058ca755f1b46c21e17ffa690e6bbcebeeed8199d381f94f2c5fcc4a", size = 2990018, upload-time = "2025-07-23T10:24:32.891Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/08/d30e34ab0c625348d47d30976f73910e0662e15b14194c4e39aa2474074a/kedro_viz-12.1.0-py3-none-any.whl", hash = "sha256:47bf90065227e93babf090a1aebaf2b55ce40e1365eb3c9d1f51ac46ad777e39", size = 1890981, upload-time = "2025-09-10T08:40:41.255Z" },
+]
+
+[[package]]
+name = "kedro-viz"
+version = "12.4.0"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version == '3.10.*'",
+    "python_full_version == '3.11.*'",
+    "python_full_version >= '3.12' and python_full_version < '3.14'",
+    "python_full_version >= '3.14'",
+]
+dependencies = [
+    { name = "aiofiles", marker = "python_full_version >= '3.10'" },
+    { name = "click-default-group", marker = "python_full_version >= '3.10'" },
+    { name = "fastapi", marker = "python_full_version >= '3.10'" },
+    { name = "fsspec", marker = "python_full_version >= '3.10'" },
+    { name = "ipython", marker = "python_full_version >= '3.10'" },
+    { name = "kedro", marker = "python_full_version >= '3.10'" },
+    { name = "kedro-telemetry", marker = "python_full_version >= '3.10'" },
+    { name = "networkx", marker = "python_full_version >= '3.10'" },
+    { name = "orjson", marker = "python_full_version >= '3.10'" },
+    { name = "packaging", marker = "python_full_version >= '3.10'" },
+    { name = "pandas", marker = "python_full_version >= '3.10'" },
+    { name = "pathspec", marker = "python_full_version >= '3.10'" },
+    { name = "plotly", marker = "python_full_version >= '3.10'" },
+    { name = "pydantic", marker = "python_full_version >= '3.10'" },
+    { name = "secure", marker = "python_full_version >= '3.10'" },
+    { name = "uvicorn", extra = ["standard"], marker = "python_full_version >= '3.10'" },
+    { name = "watchfiles", marker = "python_full_version >= '3.10'" },
+    { name = "werkzeug", marker = "python_full_version >= '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c2/8c/b878a919f07e1851377590dc37d113d3855a72ee915ae2fc9b6ff217162b/kedro_viz-12.4.0.tar.gz", hash = "sha256:c4ccc28b14395aff68fdf55d3c4edf8a2811eed9cd2667fe96c06a8cbcdd824f", size = 3160243, upload-time = "2026-05-27T16:39:37.678Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/a0/b57c15e8f981e281dbf17c09535c79c2e5fc2854b40d14b2279ef9aec1a0/kedro_viz-12.4.0-py3-none-any.whl", hash = "sha256:6ba49c5cd40c345666c0859221f13df9babf4e3d6203fcabc071985ed6480d6b", size = 3224450, upload-time = "2026-05-27T16:39:35.781Z" },
 ]
 
 [[package]]
@@ -4338,6 +4379,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/04/e4/120ff3180b0872b1fe6637f6f995bcb009fb5c87d597c1fc21456f50c848/websockets-15.0.1-pp39-pypy39_pp73-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4b826973a4a2ae47ba357e4e82fa44a463b8f168e1ca775ac64521442b19e87f", size = 174150, upload-time = "2025-03-05T20:03:35.757Z" },
     { url = "https://files.pythonhosted.org/packages/cb/c3/30e2f9c539b8da8b1d76f64012f3b19253271a63413b2d3adb94b143407f/websockets-15.0.1-pp39-pypy39_pp73-win_amd64.whl", hash = "sha256:21c1fa28a6a7e3cbdc171c694398b6df4744613ce9b36b1a498e816787e28123", size = 176877, upload-time = "2025-03-05T20:03:37.199Z" },
     { url = "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl", hash = "sha256:f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f", size = 169743, upload-time = "2025-03-05T20:03:39.41Z" },
+]
+
+[[package]]
+name = "werkzeug"
+version = "3.1.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe", marker = "python_full_version >= '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/b2/381be8cfdee792dd117872481b6e378f85c957dd7c5bca38897b08f765fd/werkzeug-3.1.8.tar.gz", hash = "sha256:9bad61a4268dac112f1c5cd4630a56ede601b6ed420300677a869083d70a4c44", size = 875852, upload-time = "2026-04-02T18:49:14.268Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/8c/2e650f2afeb7ee576912636c23ddb621c91ac6a98e66dc8d29c3c69446e1/werkzeug-3.1.8-py3-none-any.whl", hash = "sha256:63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50", size = 226459, upload-time = "2026-04-02T18:49:12.72Z" },
 ]
 
 [[package]]
