@@ -1,5 +1,5 @@
 from kedro.pipeline import Pipeline, node, pipeline
-from .nodes import enrich_2021_2025_splits, process_2021_2025_splits
+from .nodes import enrich_2021_2025_splits, plot_pace_chart, process_2021_2025_splits
 
 
 def create_pipeline(**kwargs) -> Pipeline:
@@ -21,6 +21,12 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 outputs="es_splits_2021_2025_processed",
                 name="enrich__es_splits_2021_2025",
+            ),
+            node(
+                func=plot_pace_chart,
+                inputs="es_splits_2021_2025_processed",
+                outputs="es_pace_chart",
+                name="plot__pace_chart",
             ),
         ]
     )
