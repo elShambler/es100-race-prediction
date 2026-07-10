@@ -23,6 +23,13 @@ es_splits_2021_2025:
       MaxTime: ${polars:Float64}
       OverallRank: ${polars:Int64}
 
+# Race metadata: start dates and times per year
+es_race_meta:
+  type: polars.CSVDataset
+  filepath: data/01_raw/es100_race_meta.csv
+  load_args:
+    separator: ","
+
 # Historical AS info is obtained by scraping the AS info from the ES100 website
 es_asinfo_historical:
   type: polars.CSVDataset
@@ -44,6 +51,14 @@ es_splits_2021_2025_long:
   filepath: data/02_intermediate/es_splits_2021_2025_long.csv
   load_args:
     infer_schema_length: 0
+  metadata:
+    kedro-viz:
+      layer: intermediate
+
+# 2021-2025 splits enriched with elapsed times, AS distances, finish data, and rankings
+es_splits_2021_2025_processed:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_splits_2021_2025_processed.csv
   metadata:
     kedro-viz:
       layer: intermediate
