@@ -5,7 +5,7 @@
 # 2016-2017 data is taken from UltraLive
 es_splits_historical_2016-17:
   type: polars.CSVDataset
-  filepath: 'data/01_raw/ES100_2016-2017_splits.csv'
+  filepath: 'data/01_raw/es100_2016-2017.csv'
   load_args:
     separator: ","
 
@@ -44,6 +44,22 @@ es_finish_historical:
   filepath: data/01_raw/es100_finish_times.csv
   load_args:
     separator: ","
+
+# 2016-2017 splits enriched to match the 2021-2025 schema
+es_splits_2016_2017_processed:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_splits_2016_2017_processed.csv
+  metadata:
+    kedro-viz:
+      layer: intermediate
+
+# All years combined into a single long-format dataset
+es_splits_all:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_splits_all.csv
+  metadata:
+    kedro-viz:
+      layer: intermediate
 
 # 2021-2025 splits reshaped to long format (one row per runner × aid station)
 es_splits_2021_2025_long:
