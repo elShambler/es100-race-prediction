@@ -4,136 +4,98 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Kedro 1.0 project analyzing Eastern States 100 mile foot race data (2016-2025+). The project processes historical split times and finish data from multiple years with varying data formats and quality.
+A Kedro 1.0 project that processes and analyzes Eastern States 100 mile foot race data (2016–2025). It ingests split times from multiple sources with varying formats, normalizes them into a unified long-format dataset, and will eventually feed ML pace-prediction models.
+
+Years not run: 2018, 2020, 2024.
 
 ## Core Commands
 
-### Environment Setup
 ```bash
-# Install dependencies using uv (preferred)
+# Install dependencies
 uv sync
 
-# Or using pip
-pip install -r requirements.txt
-```
-
-### Running Pipelines
-```bash
-# Run all pipelines
-uv run kedro run
-
-# Run specific pipeline
+# Run the working pipeline (use --pipeline flag — bare `kedro run` fails
+# because the feature_engineering pipeline has an unresolved input)
 uv run kedro run --pipeline data_processing
 
-# Run specific node
-uv run kedro run --node preprocess_ultralive_node
-```
+# Run specific nodes by name
+uv run kedro run --nodes wide_to_long__es_splits_2021_2025
+uv run kedro run --nodes enrich__es_splits_2021_2025,plot__pace_chart
 
-### Testing
-```bash
-# Run tests with coverage
-pytest
-
-# Note: As of this writing, no tests directory exists yet
-```
-
-### Linting and Formatting
-```bash
-# Format code (ruff is configured in pyproject.toml)
-ruff format .
-
-# Check linting
-ruff check .
-```
-
-### Jupyter/Interactive Development
-```bash
-# Start Jupyter notebook (provides catalog, context, pipelines, session in scope)
-uv run kedro jupyter notebook
-
-# Start JupyterLab
+# Interactive development (catalog, context, session available in scope)
 uv run kedro jupyter lab
-
-# Start IPython session
 uv run kedro ipython
-```
 
-### Visualization
-```bash
-# Launch Kedro Viz to visualize pipelines
+# Visualize pipeline DAG and dataset previews
 uv run kedro viz
+
+# Lint / format
+ruff check .
+ruff format .
 ```
 
 ## Architecture
 
-### Kedro Framework Structure
+### Kedro Conventions
 
-This project follows Kedro's standard structure with custom configurations:
+- **Pipeline discovery**: `find_pipelines()` in `pipeline_registry.py` auto-discovers all pipeline modules. The `__default__` pipeline is the union of all registered pipelines.
+- **Config loader**: `OmegaConfigLoader` with a custom `polars` resolver — use `${polars:Int64}` in `catalog.yml` to reference Polars dtypes directly.
+- **Environments**: base config in `conf/base/`, local overrides (credentials, etc.) in `conf/local/` (gitignored).
 
-- **Pipeline Registry** (`src/eastern_states_pace_predict/pipeline_registry.py`): Uses `find_pipelines()` to auto-discover all pipeline modules. The `__default__` pipeline is the sum of all pipelines.
+### Data Layer Conventions (`conf/base/catalog.yml`)
 
-- **Settings** (`src/eastern_states_pace_predict/settings.py`):
-  - Uses `OmegaConfigLoader` with custom Polars resolver
-  - Registers `polars` resolver to use Polars datatypes in config files: `${polars:Int64}`
-  - Base environment: `base`, Default run environment: `local`
+| Layer | Path | Purpose |
+|---|---|---|
+| `raw` | `data/01_raw/` | Source files, never modified |
+| `intermediate` | `data/02_intermediate/` | Node outputs, regenerable |
+| `reporting` | `data/08_reporting/` | Plotly charts, exported artifacts |
 
-- **Data Catalog** (`conf/base/catalog.yml`):
-  - Primarily uses Polars datasets (`polars.CSVDataset`, `polars.LazyPolarsDataset`)
-  - Raw data in `data/01_raw/`, processed in `data/02_intermediate/`
-  - Keep credentials in `conf/local/credentials.yml` (gitignored)
+Intermediate datasets that need Kedro Viz table previews use `PolarsPreviewCSVDataset` (defined in `src/.../datasets/polars_preview_csv_dataset.py`) instead of bare `polars.CSVDataset`. Raw datasets load with `infer_schema_length: 0` plus `schema_overrides` when column types need to be pinned.
 
-### Data Processing Pipeline
+### Custom Dataset Classes (`src/.../datasets/`)
 
-Located in `src/eastern_states_pace_predict/pipelines/data_processing/`:
+- **`PolarsPreviewCSVDataset`**: extends `polars.CSVDataset` with a `preview()` method so Kedro Viz renders a data table. Use this for any intermediate CSV that should be inspectable in Viz.
+- **`PolarsExcelDataset`**: read-only wrapper around `polars.read_excel` (via fastexcel). Used for `.xlsx` source files.
 
-**Key Node**: `preprocess_20162017_data` (nodes.py:165)
-- Processes UltraLive.net scraped data (2016-2017) which only has time-in values
-- Adds race dates based on year
-- Converts time-of-day strings to datetime objects
+### Data Processing Pipeline (`pipelines/data_processing/`)
 
-**Helper Functions**:
-- `add_race_date()`: Maps year to actual race date (e.g., 2016 → 2016-08-13)
-- `add_check_in_out__tod()`: Converts time-of-day strings to datetime using race_date
-- `convert_elapsed_tod()`: Converts elapsed time format (HH:MM:SS) to datetime from 05:00 start
+This is the only fully wired pipeline. It runs in strict node order:
 
-### Data Handling Philosophy
+```
+es_splits_2021_2025 (raw CSV)
+    → wide_to_long__es_splits_2021_2025   # unpivots wide→long, one row per runner×AS
+    → es_splits_2021_2025_long (intermediate)
+    → enrich__es_splits_2021_2025          # joins meta/AS info/finish times, computes elapsed
+    → es_splits_2021_2025_processed (intermediate)
+    → plot__pace_chart                     # Plotly scatter: distance vs elapsed, year toggle
+    → es_pace_chart (reporting, JSON)
+```
 
-The project uses **Polars** as the primary dataframe library (not Pandas) for better performance. When working with data:
-- Prefer `polars.LazyPolarsDataset` for large datasets
-- Use `try_parse_dates: True` in catalog load_args for automatic date parsing
-- Race start time is assumed to be 05:00 on race day
+**Key logic in `enrich__es_splits_2021_2025`:**
 
-### Historical Data Context
+- Renames `bib_number` → `bib` and casts `year` to `Int64` (CSV loads everything as str with `infer_schema_length: 0`).
+- Joins `es_race_meta` (race start date/time per year), `es_asinfo_historical` (AS names, distances, finish flag), and `es_finish_historical` (official finish times and runner demographics).
+- TOD → elapsed conversion uses **seconds-since-midnight** as the intermediate unit. The base datetime for each point is `race_date midnight + seconds + day_offset` — **not** race start time — to avoid a 5-hour offset error.
+- Midnight rollover detection: cumulative crossing count per runner (sorted by `as_index`). The first crossing is genuine; a second apparent crossing while already on day+1 is treated as an AM/PM data-entry error and corrected by adding 12 h to that row's TOD seconds only (not subsequent rows).
+- Runner-level fields (`MaxAS`, `FinishRank`, `OverallRank`, `MaxTime`) are computed via `group_by` aggregation and joined back.
+- Per-AS `as_rank` is computed by sorting on `as_check_in__tod__datetime` within `(year, as_index)`.
 
-Different years have different data formats:
-- **2016-2017**: UltraLive.net scrapes (time-in only, no checkout times)
-- **2021+**: Standard format with full split data (check-in and check-out times)
-- **2022-2023**: Excel files with 'rollup' sheets
+**`as_check_in__elapsed__min` stores decimal hours** (e.g., 1.75 = 1 h 45 min), matching the existing 2016-2017 data convention despite the "min" suffix.
 
-See README.md for complete race history including years not run (2018, 2020, 2024).
+### 2016-2017 vs 2021-2025 Data Differences
 
-## Configuration Notes
+| Aspect | 2016-2017 | 2021-2025 |
+|---|---|---|
+| Source format | Long (one row per runner×AS) | Wide (one row per runner, 17 AS columns) |
+| Elapsed times | Pre-computed in source | Computed in pipeline |
+| Check-out times | Absent | Partial |
+| Demographics | Absent | Joined from finish times |
+| Finish station | AS_18 row | Identified via `flag_finish` in as_info |
 
-- Python 3.9+ required
-- Uses `uv` for modern Python package management (note `uv.lock` file)
-- Kedro telemetry enabled (project_id in pyproject.toml)
-- Coverage threshold set to 0 (no enforcement)
-- Line length: 88 characters
-- Ruff ignores E501 (line-too-long) since formatter handles it
+The raw 2016-2017 file (`es100_2016-2017.csv`) already has all elapsed/datetime columns. It does not need the unpivot step.
 
-## Data Catalog Conventions
+### Known Issues
 
-When adding new datasets:
-1. Place raw data in `data/01_raw/`
-2. Define in `conf/base/catalog.yml` using Polars datasets
-3. Use descriptive names like `es_splits_YEAR` or `es_processed_YEARRANGE`
-4. Intermediate/processed data goes to `data/02_intermediate/`
-
-## Key Dependencies
-
-- **kedro[jupyter]==1.0**: Core framework
-- **polars>=1.30.0**: Primary data processing (not pandas)
-- **duckdb>=1.3.0**: SQL analytics engine
-- **scikit-learn~=1.5.1**: ML models
-- **fastexcel>=0.14.0**: Fast Excel reading
-- **kedro-viz**: Pipeline visualization
+- `uv run kedro run` (bare) fails because `feature_engineering` pipeline references `es_splits_with_finish` which is not in the catalog. Always use `--pipeline data_processing` until that pipeline is fixed.
+- Five rows in the 2021-2025 wide data have literal `"DNF"` in `as_check_in__tod` (not null) and are filtered out at the start of `enrich_2021_2025_splits`.
+- Some bib numbers have trailing asterisks (e.g., `"545*"`) — these are stripped before casting to `Int64`.
