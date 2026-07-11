@@ -5,7 +5,7 @@ from kedro_datasets.polars import CSVDataset
 class PolarsPreviewCSVDataset(CSVDataset):
     """polars.CSVDataset with a preview() method for Kedro Viz table display."""
 
-    def preview(self, nrows: int = 10000) -> TablePreview:
+    def preview(self, nrows: int = 50) -> TablePreview:
         data = self.load().head(nrows)
         return {
             "columns": data.columns,

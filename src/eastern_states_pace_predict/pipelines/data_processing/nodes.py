@@ -281,7 +281,11 @@ def enrich_2021_2025_splits(
     per_runner = (
         df.group_by(["year", "bib"])
         .agg(
-            pl.col("flag_finish").any().alias("has_finish"),
+            # official_rank from finish_times is the authoritative finish indicator.
+            # flag_finish from as_info is unreliable: in some years (e.g., 2025) the
+            # finish checkpoint row is absent from the split data entirely, so
+            # flag_finish.any() would return False for every finisher in that year.
+            pl.col("official_rank").is_not_null().any().alias("has_finish"),
             pl.col("_as_num").max().alias("_max_as_num"),
             pl.col("as_dist_from_start").max().alias("_max_dist"),
             pl.col("as_check_in__elapsed__min").max().alias("_max_elapsed"),
@@ -388,7 +392,8 @@ def plot_pace_chart(df: pl.DataFrame) -> go.Figure:
         for bib in sorted(year_df["bib"].unique().to_list()):
             runner = year_df.filter(pl.col("bib") == bib)
             first_name = runner["name"].drop_nulls().first()
-            label = f"{bib}" if first_name is None else f"{bib} – {first_name}"
+            bib_str = str(int(bib))
+            label = bib_str if first_name is None else f"{bib_str} – {first_name}"
             hover_rows = runner.select(
                 ["as_index", "as_name", "as_check_in__tod",
                  "as_check_in__elapsed", "as_check_in__tod__datetime"]
@@ -449,3 +454,182 @@ def plot_pace_chart(df: pl.DataFrame) -> go.Figure:
         ],
     )
     return fig
+
+
+def process_2016_2017_splits(
+    raw: pl.DataFrame,
+    as_info: pl.DataFrame,
+    finish_times: pl.DataFrame,
+) -> pl.DataFrame:
+    """Enrich the pre-computed 2016-2017 long splits to match the 2021-2025 schema.
+
+    Inputs: es_splits_historical_2016-17, es_asinfo_historical, es_finish_historical
+    Outputs: es_splits_2016_2017_processed
+    """
+    # a. Clean and cast. Drop columns that may or may not exist depending on the
+    # source file version (time_check/time_adjustment were removed in a later cut;
+    # the trailing empty column '' comes from a trailing comma in the CSV).
+    _cols_to_drop = [c for c in ["time_check", "time_adjustment", "name", "gender", "age", ""] if c in raw.columns]
+    df = (
+        raw.filter(pl.col("year").is_not_null())
+        .drop(_cols_to_drop)
+        .with_columns(
+            pl.col("year").cast(pl.Int64),
+            pl.col("bib").cast(pl.Int64),
+            pl.col("as_check_in__elapsed__min").cast(pl.Float64),
+            pl.col("as_dist_from_start").cast(pl.Float64),
+            pl.col("as_dist_incr").cast(pl.Float64),
+        )
+    )
+
+    # b. Join as_info to get flag_finish
+    ai = as_info.select(
+        pl.col("year").cast(pl.Int64),
+        pl.col("as_index"),
+        pl.col("flag_finish").cast(pl.Boolean),
+    )
+    df = df.join(ai, on=["year", "as_index"], how="left")
+
+    # c. Join finish_times for demographics and official results
+    ft = (
+        finish_times.filter(pl.col("race_year").is_in([2016, 2017]))
+        .select(
+            pl.col("race_year").cast(pl.Int64).alias("year"),
+            pl.col("bib").cast(pl.Int64),
+            pl.col("name"),
+            pl.col("gender"),
+            pl.col("age"),
+            pl.col("city"),
+            pl.col("official_rank"),
+            pl.col("finish_time"),
+            pl.col("finish_elapsed_hrs"),
+            pl.col("finish_elapsed_mins"),
+        )
+    )
+    df = df.join(ft, on=["year", "bib"], how="left")
+
+    # d. Compute runner-level metadata
+    df = df.with_columns(
+        pl.col("as_index").str.extract(r"(\d+)$").cast(pl.Int32).alias("_as_num")
+    )
+
+    per_runner = (
+        df.group_by(["year", "bib"])
+        .agg(
+            # official_rank from finish_times is the authoritative finish indicator.
+            # flag_finish from as_info is unreliable for 2016-2017 because some runners
+            # bypassed the AS_17 checkpoint (marked as finish in as_info) and only have
+            # an AS_18 row, causing flag_finish.any() to return False for true finishers.
+            pl.col("official_rank").is_not_null().any().alias("has_finish"),
+            pl.col("_as_num").max().alias("_max_as_num"),
+            pl.col("as_dist_from_start").max().alias("_max_dist"),
+            pl.col("as_check_in__elapsed__min").max().alias("_max_elapsed"),
+            pl.col("official_rank").first().alias("_official_rank"),
+            pl.col("finish_elapsed_hrs").first().alias("_finish_hrs"),
+        )
+        .with_columns(
+            pl.when(pl.col("has_finish"))
+            .then(pl.col("_official_rank").cast(pl.String))
+            .otherwise(pl.lit("DNF"))
+            .alias("FinishRank"),
+            pl.when(pl.col("has_finish"))
+            .then(pl.lit("FINISH"))
+            .otherwise(
+                pl.concat_str([
+                    pl.lit("AS_"),
+                    pl.col("_max_as_num").cast(pl.String).str.zfill(2),
+                ])
+            )
+            .alias("MaxAS"),
+            pl.when(pl.col("has_finish"))
+            .then(pl.col("_finish_hrs"))
+            .otherwise(pl.col("_max_elapsed"))
+            .alias("MaxTime"),
+        )
+    )
+
+    per_runner = per_runner.with_columns(
+        pl.struct(
+            (-pl.col("_max_dist")).alias("neg_dist"),
+            pl.col("MaxTime").alias("time"),
+        )
+        .rank(method="ordinal")
+        .over("year")
+        .alias("OverallRank")
+    )
+
+    runner_meta = per_runner.select(
+        ["year", "bib", "FinishRank", "MaxAS", "MaxTime", "OverallRank"]
+    )
+    df = df.drop("_as_num").join(runner_meta, on=["year", "bib"], how="left")
+
+    # e. Compute as_rank from elapsed time (TOD is absent in 2016-2017)
+    df = (
+        df.sort(["year", "as_index", "as_check_in__elapsed__min", "bib"])
+        .with_columns(
+            (pl.int_range(pl.len()).over(["year", "as_index"]) + 1).alias("as_rank")
+        )
+    )
+
+    # f. Normalize datetime strings to ISO format
+    df = df.with_columns(
+        pl.col("as_check_in__tod__datetime")
+        .str.to_datetime("%m/%d/%y %H:%M", strict=False)
+        .cast(pl.String)
+        .alias("as_check_in__tod__datetime"),
+        pl.col("race_datetime")
+        .str.to_datetime("%m/%d/%y %H:%M", strict=False)
+        .dt.strftime("%Y-%m-%d %H:%M")
+        .alias("race_datetime"),
+    )
+
+    # g. Add null OriginalOrder (no equivalent in 2016-2017)
+    df = df.with_columns(pl.lit(None).cast(pl.Int64).alias("OriginalOrder"))
+
+    # h. Drop flag_finish and select final column order
+    df = df.drop("flag_finish")
+    ordered_cols = [
+        "year", "bib", "name", "gender", "age", "city",
+        "as_index", "as_name",
+        "as_check_in__tod", "as_check_out__tod",
+        "as_check_in__elapsed", "as_check_out__elapsed",
+        "race_datetime", "as_check_in__tod__datetime",
+        "as_check_in__elapsed__min",
+        "as_dist_from_start", "as_dist_incr",
+        "MaxAS", "FinishRank", "OverallRank", "MaxTime",
+        "as_rank",
+        "official_rank", "finish_time", "finish_elapsed_hrs", "finish_elapsed_mins",
+        "OriginalOrder",
+    ]
+    final_cols = [c for c in ordered_cols if c in df.columns]
+    return df.select(final_cols)
+
+
+def combine_splits(
+    df_1617: pl.DataFrame,
+    df_2125: pl.DataFrame,
+) -> pl.DataFrame:
+    """Stack 2016-2017 and 2021-2025 processed splits into a single dataset.
+
+    Inputs: es_splits_2016_2017_processed, es_splits_2021_2025_processed
+    Outputs: es_splits_all
+    """
+    float_cols = ["as_check_in__elapsed__min", "as_dist_from_start",
+                  "as_dist_incr", "finish_elapsed_hrs", "finish_elapsed_mins"]
+    int_cols = ["year", "bib", "OverallRank", "as_rank", "official_rank"]
+
+    def _normalise_types(df: pl.DataFrame) -> pl.DataFrame:
+        exprs = []
+        for col in float_cols:
+            if col in df.columns:
+                exprs.append(pl.col(col).cast(pl.Float64, strict=False))
+        for col in int_cols:
+            if col in df.columns:
+                exprs.append(pl.col(col).cast(pl.Int64, strict=False))
+        return df.with_columns(exprs) if exprs else df
+
+    combined = pl.concat(
+        [_normalise_types(df_1617), _normalise_types(df_2125)],
+        how="diagonal_relaxed",
+    )
+    return combined.sort(["year", "bib", "as_index"])
