@@ -114,14 +114,12 @@ def _(df_raw, elapsed_picker, mo, pl, year_picker):
     if not _selected_years:
         mo.stop(True, mo.callout(mo.md("**Select at least one year.**"), kind="warn"))
 
-    plot_df = (
-        df_raw.filter(
-            pl.col("year").is_in(_selected_years)
-            & pl.col("as_index").is_not_null()
-            & pl.col("as_dist_from_start").is_not_null()
-            & pl.col(elapsed_col).is_not_null()
-        ).sort("as_dist_from_start")
-    )
+    plot_df = df_raw.filter(
+        pl.col("year").is_in(_selected_years)
+        & pl.col("as_index").is_not_null()
+        & pl.col("as_dist_from_start").is_not_null()
+        & pl.col(elapsed_col).is_not_null()
+    ).sort("as_dist_from_start")
 
     # Identify flagged runners (any quality flag column that exists)
     _FLAG_COLS = [
@@ -207,9 +205,7 @@ def _(elapsed_col, flagged_keys, go, plot_df):
             )
         )
 
-    _label = (
-        "Check-In" if "check_in" in elapsed_col else "Check-Out"
-    )
+    _label = "Check-In" if "check_in" in elapsed_col else "Check-Out"
     fig.update_layout(
         title=f"Elapsed Time vs Distance from Start — {_label}",
         xaxis_title="Distance from Start (mi)",

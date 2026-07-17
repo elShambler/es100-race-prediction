@@ -35,9 +35,7 @@ def _(Path, pl):
 
 @app.cell
 def _(df_all, mo):
-    _years = sorted(
-        df_all["year"].drop_nulls().unique().cast(int).to_list()
-    )
+    _years = sorted(df_all["year"].drop_nulls().unique().cast(int).to_list())
 
     year_picker = mo.ui.multiselect(
         options={str(y): y for y in _years},
@@ -62,11 +60,20 @@ def _(df_all, mo):
 def _(df_all, mo):
     _all_cols = df_all.columns
     _default = [
-        "year", "bib", "name", "gender", "age",
-        "as_index", "as_name",
-        "as_check_in__tod", "as_check_in__elapsed__min",
+        "year",
+        "bib",
+        "name",
+        "gender",
+        "age",
+        "as_index",
+        "as_name",
+        "as_check_in__tod",
+        "as_check_in__elapsed__min",
         "as_dist_from_start",
-        "MaxAS", "FinishRank", "OverallRank", "as_rank",
+        "MaxAS",
+        "FinishRank",
+        "OverallRank",
+        "as_rank",
     ]
 
     col_picker = mo.ui.multiselect(
@@ -103,7 +110,9 @@ def _(col_picker, df_all, mo, name_search, pl, status_picker, year_picker):
 
     _runners = (
         df_all.filter(pl.col("year").cast(int).is_in(_selected_years))
-        .select(["bib", "year"]).unique().shape[0]
+        .select(["bib", "year"])
+        .unique()
+        .shape[0]
     )
 
     mo.callout(
