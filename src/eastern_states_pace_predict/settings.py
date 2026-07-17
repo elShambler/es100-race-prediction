@@ -34,12 +34,12 @@ if not OmegaConf.has_resolver("polars"):
 CONFIG_LOADER_CLASS = OmegaConfigLoader
 # Keyword arguments to pass to the `CONFIG_LOADER_CLASS` constructor.
 CONFIG_LOADER_ARGS = {
-      "base_env": "base",
-      "default_run_env": "local",
-#       "config_patterns": {
-#           "spark" : ["spark*/"],
-#           "parameters": ["parameters*", "parameters*/**", "**/parameters*"],
-#       }
+    "base_env": "base",
+    "default_run_env": "local",
+    #       "config_patterns": {
+    #           "spark" : ["spark*/"],
+    #           "parameters": ["parameters*", "parameters*/**", "**/parameters*"],
+    #       }
 }
 
 # Class that manages Kedro's library components.
