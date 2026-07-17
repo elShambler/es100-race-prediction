@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 name = "eastern_states_pace_predict"
 readme = "README.md"
 dynamic = ["version"]
@@ -22,6 +22,7 @@ dependencies = [
     "geojson>=3.2.0",
     "marimo>=0.13.15",
     "fastexcel>=0.14.0",
+    "kedro-mlflow>=2.0.3",
 ]
 
 [project.scripts]
