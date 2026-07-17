@@ -57,6 +57,12 @@ es_splits_2016_2017_processed:
 es_splits_all:
   type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
   filepath: data/02_intermediate/es_splits_all.csv
+  load_args:
+    # Check-out data is sparse (absent for 2016-2017, partial elsewhere), so
+    # schema inference over the leading rows would type these as String.
+    schema_overrides:
+      as_check_in__elapsed__min: ${polars:Float64}
+      as_check_out__elapsed__min: ${polars:Float64}
   metadata:
     kedro-viz:
       layer: intermediate
@@ -83,6 +89,62 @@ es_pace_chart:
 es_splits_2021_2025_processed:
   type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
   filepath: data/02_intermediate/es_splits_2021_2025_processed.csv
+  load_args:
+    # Early rows have no check-out times, which would infer as String.
+    schema_overrides:
+      as_check_in__elapsed__min: ${polars:Float64}
+      as_check_out__elapsed__min: ${polars:Float64}
   metadata:
     kedro-viz:
       layer: intermediate
+
+# Trained aid-station stoppage-time regressor (predicts minutes spent in an AS).
+# MlflowArtifactDataset keeps the local pickle (downstream nodes load it even
+# outside a tracked run) and logs a copy as an artifact of the MLflow run.
+es_stoppage_model:
+  type: kedro_mlflow.io.artifacts.MlflowArtifactDataset
+  dataset:
+    type: pickle.PickleDataset
+    filepath: data/06_models/es_stoppage_model.pkl
+  metadata:
+    kedro-viz:
+      layer: models
+
+# Holdout-validation metrics for the stoppage model (MAE vs naive baseline),
+# kept locally and attached to the MLflow run as a JSON artifact.
+es_stoppage_model_metrics:
+  type: kedro_mlflow.io.artifacts.MlflowArtifactDataset
+  dataset:
+    type: json.JSONDataset
+    filepath: data/06_models/es_stoppage_model_metrics.json
+  metadata:
+    kedro-viz:
+      layer: models
+
+# Numeric validation metrics logged to the MLflow run's metrics panel
+es_stoppage_model_metrics_tracked:
+  type: kedro_mlflow.io.metrics.MlflowMetricsHistoryDataset
+  prefix: stoppage
+  metadata:
+    kedro-viz:
+      layer: models
+
+# 2021-2025 splits with missing check-in/check-out elapsed times imputed
+es_splits_2021_2025_imputed:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/04_feature/es_splits_2021_2025_imputed.csv
+  load_args:
+    schema_overrides:
+      as_check_in__elapsed__min: ${polars:Float64}
+      as_check_out__elapsed__min: ${polars:Float64}
+  metadata:
+    kedro-viz:
+      layer: feature
+
+# Per runner × aid-station interval features: interval pace, overall pace, pace ratio
+es_interval_features:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/04_feature/es_interval_features.csv
+  metadata:
+    kedro-viz:
+      layer: feature

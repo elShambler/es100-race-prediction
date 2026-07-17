@@ -1,11 +1,28 @@
-outlier_detection:
-  # Segment pace check (min per mile, computed between consecutive check-in times)
-  pace_floor_min_per_mile: 6.0     # faster than this per segment is physically implausible
-  pace_ceiling_min_per_mile: 90.0  # slower than this suggests a day-offset error
+stoppage_model:
+  # Feature columns built by _stoppage_features() in
+  # pipelines/feature_engineering/nodes.py — order matters for the model.
+  features:
+    - as_num
+    - as_dist_from_start
+    - elapsed_hrs
+    - overall_pace_min_per_mi
+    - age
+    - gender_code
+    - is_finisher
+    - overall_rank_pct
 
-  # Rank-based outlier detection
-  rank_model_min_samples: 10       # minimum runners needed to fit a model for a station/year
-  rank_outlier_std_threshold: 2.5  # flag if |residual| exceeds N * residual std dev
+  model:
+    max_iter: 300
+    learning_rate: 0.05
+    max_depth: 6
+    random_state: 42
 
-  # Race cutoff
-  race_cutoff_hours: 36
+  validation:
+    strategy: year_holdout   # "year_holdout" or "random"
+    holdout_year: 2023
+    test_size: 0.2           # only used when strategy == "random"
+    random_state: 42
+
+  prediction:
+    min_stoppage_min: 0.0
+    max_stoppage_min: 120.0
