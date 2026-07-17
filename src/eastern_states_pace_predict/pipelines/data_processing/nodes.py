@@ -26,13 +26,13 @@ def process_2021_2025_splits(splits: pl.DataFrame) -> pl.DataFrame:
         "FinishRank",
     ]
 
-    def _unpivot_metric(df: pl.DataFrame, suffix: str, out_col: str) -> pl.DataFrame:
+    def _unpivot_metric(
+        df: pl.DataFrame, suffix: str, out_col: str, index_cols: list[str]
+    ) -> pl.DataFrame:
         cols = [c for c in df.columns if c.endswith(suffix)]
         return (
-            df.select(runner_cols + cols)
-            .unpivot(
-                on=cols, index=runner_cols, variable_name="col", value_name=out_col
-            )
+            df.select(index_cols + cols)
+            .unpivot(on=cols, index=index_cols, variable_name="col", value_name=out_col)
             .with_columns(
                 pl.concat_str(
                     [pl.lit("AS_"), pl.col("col").str.extract(r"^as(\d+)_")]
@@ -41,23 +41,35 @@ def process_2021_2025_splits(splits: pl.DataFrame) -> pl.DataFrame:
             .drop("col")
         )
 
+    # Runner-level cols (MaxTime, OverallRank, …) are entirely null for
+    # 2022/2023/2025 in the raw file, so they must never be join keys — Polars
+    # joins treat null keys as non-matching, which silently drops the joined
+    # metric. Only the arr unpivot carries them; dep/rank join on the
+    # guaranteed-non-null (year, bib_number, as_index).
     arr_tod = _unpivot_metric(
-        splits.drop("as01_arr_rank2"), "_arr_tod", "as_check_in__tod"
+        splits.drop("as01_arr_rank2"), "_arr_tod", "as_check_in__tod", runner_cols
     )
-    dep_tod = _unpivot_metric(splits, "_dep_tod", "as_check_out__tod")
+    dep_tod = _unpivot_metric(
+        splits, "_dep_tod", "as_check_out__tod", ["year", "bib_number"]
+    )
     arr_rank = _unpivot_metric(
-        splits.drop("as01_arr_rank2").select(
-            [c for c in splits.columns if not c.endswith("_rank2")]
-        ),
+        splits.select([c for c in splits.columns if not c.endswith("_rank2")]),
         "_arr_rank",
         "arr_rank",
+        ["year", "bib_number"],
     )
 
-    join_keys = runner_cols + ["as_index"]
+    # arr_tod spans every AS column (AS_17/finish has no dep column), so a left
+    # join covers all station visits. Keep rows with either an arrival or a
+    # departure time — 2025 recorded mostly departures.
+    join_keys = ["year", "bib_number", "as_index"]
     return (
         arr_tod.join(dep_tod, on=join_keys, how="left")
         .join(arr_rank, on=join_keys, how="left")
-        .filter(pl.col("as_check_in__tod").is_not_null())
+        .filter(
+            pl.col("as_check_in__tod").is_not_null()
+            | pl.col("as_check_out__tod").is_not_null()
+        )
         .sort(["bib_number", "as_index"])
     )
 
@@ -78,12 +90,26 @@ def enrich_2021_2025_splits(
     RACE_START_S = 5 * 3600  # 05:00 in seconds since midnight
 
     # a. Rename bib_number → bib; cast year to Int64 (CSV loads it as str).
-    # Filter rows where as_check_in__tod is not a valid HH:MM time — the
-    # upstream wide-to-long node filters nulls but not garbage string values.
+    # Sanitize garbage TOD values (literal "DNF", typos like 8::27 or 12"17) to
+    # null in both columns, then keep rows that still have at least one time —
+    # 2025 recorded mostly departure times, so arrival-null rows must survive.
+    _TOD_PATTERN = r"^\d{2}:\d{2}$"
     df = (
         long_df.rename({"bib_number": "bib"})
         .with_columns(pl.col("year").cast(pl.Int64))
-        .filter(pl.col("as_check_in__tod").str.contains(r"^\d{2}:\d{2}$"))
+        .with_columns(
+            [
+                pl.when(pl.col(c).str.contains(_TOD_PATTERN))
+                .then(pl.col(c))
+                .otherwise(None)
+                .alias(c)
+                for c in ["as_check_in__tod", "as_check_out__tod"]
+            ]
+        )
+        .filter(
+            pl.col("as_check_in__tod").is_not_null()
+            | pl.col("as_check_out__tod").is_not_null()
+        )
     )
 
     # b. Join race_meta to get race_date and race_datetime
@@ -96,8 +122,9 @@ def enrich_2021_2025_splits(
         pl.concat_str([pl.col("race_date"), pl.lit(" "), pl.col("race_time_start")])
         .str.to_datetime("%Y-%m-%d %H:%M")
         .alias("race_start_datetime"),
-        pl.concat_str([pl.col("race_date"), pl.lit(" "), pl.col("race_time_start")])
-        .alias("race_datetime"),
+        pl.concat_str(
+            [pl.col("race_date"), pl.lit(" "), pl.col("race_time_start")]
+        ).alias("race_datetime"),
     )
 
     # c. Join as_info for station names, distances, and finish flag
@@ -123,14 +150,12 @@ def enrich_2021_2025_splits(
     def _elapsed_hours(dt_col: str) -> pl.Expr:
         """Decimal hours elapsed since race_start_datetime."""
         return (
-            (pl.col(dt_col) - pl.col("race_start_datetime")).dt.total_seconds() / 3600
-        )
+            pl.col(dt_col) - pl.col("race_start_datetime")
+        ).dt.total_seconds() / 3600
 
     def _elapsed_hhmmss(dt_col: str) -> pl.Expr:
         """HH:MM:SS string for total elapsed time."""
-        total_s = (
-            pl.col(dt_col) - pl.col("race_start_datetime")
-        ).dt.total_seconds()
+        total_s = (pl.col(dt_col) - pl.col("race_start_datetime")).dt.total_seconds()
         hours = (total_s // 3600).cast(pl.Int64)
         minutes = ((total_s % 3600) // 60).cast(pl.Int64)
         seconds = (total_s % 60).cast(pl.Int64)
@@ -144,131 +169,188 @@ def enrich_2021_2025_splits(
             ]
         )
 
-    # Arrival: compute seconds, detect midnight crossings, build datetime.
+    # Compute seconds, detect midnight crossings, build datetimes.
     #
     # Base datetime is midnight of race_date (NOT 05:00). Adding seconds-since-
     # midnight to midnight gives the correct TOD datetime; subtracting
     # race_start_datetime then yields the true elapsed time.
     #
+    # Arrival may be null (2025 recorded mostly departures), so crossing
+    # detection runs on the best-available time per row: coalesce(arr, dep).
+    # After the sanitize-filter above, that reference is never null, and each
+    # value is a real chronological event between the neighbouring stations.
+    #
     # The race has a hard 36-hour cutoff, so only one genuine midnight crossing
     # is possible. A second apparent backward jump while already on day+1 is an
     # AM/PM data-entry error — correct that specific row by adding 12 h.
-    df = df.sort(["year", "bib", "as_index"]).with_columns(
-        _tod_to_seconds("as_check_in__tod").alias("_arr_s"),
-        pl.col("race_start_datetime").dt.truncate("1d").alias("_race_midnight"),
-    ).with_columns(
-        pl.col("_arr_s")
-        .shift(1, fill_value=RACE_START_S)
-        .over(["year", "bib"])
-        .alias("_prev_arr_s")
-    ).with_columns(
-        (pl.col("_arr_s") < pl.col("_prev_arr_s"))
-        .cast(pl.Int32)
-        .alias("_is_arr_cross")
-    ).with_columns(
-        pl.col("_is_arr_cross")
-        .cum_sum()
-        .over(["year", "bib"])
-        .alias("_cross_cum")
-    ).with_columns(
-        # Cap day offset at 1 — only one midnight crossing possible in a 36h race
-        pl.col("_cross_cum").clip(upper_bound=1).alias("_arr_day_offset"),
-        # Correct only the row where the second+ crossing was detected, not all
-        # subsequent rows. Rows with _is_arr_cross=0 pass through unchanged even
-        # if _cross_cum is already >= 2.
-        pl.when(
-            (pl.col("_is_arr_cross") == 1) & (pl.col("_cross_cum") >= 2)
+    #
+    # A genuine crossing appears as a huge backward jump in seconds-since-
+    # midnight (~24 h minus the leg time). Small backward jumps (minutes) are
+    # timing-entry inversions — e.g. a departure clocked just before its
+    # arrival — and must NOT count as crossings or the +24 h cascades onto
+    # every later row. Tolerate backward jumps up to 1 h.
+    INVERSION_TOLERANCE_S = 3600
+    df = (
+        df.sort(["year", "bib", "as_index"])
+        .with_columns(
+            _tod_to_seconds("as_check_in__tod").alias("_arr_s"),
+            _tod_to_seconds("as_check_out__tod").alias("_dep_s"),
+            pl.col("race_start_datetime").dt.truncate("1d").alias("_race_midnight"),
         )
-        .then(pl.col("_arr_s") + 12 * 3600)
-        .otherwise(pl.col("_arr_s"))
-        .alias("_arr_s_corr"),
-    ).with_columns(
-        (
-            pl.col("_race_midnight")
-            + pl.duration(seconds=pl.col("_arr_s_corr"))
-            + pl.duration(days=pl.col("_arr_day_offset"))
-        ).alias("as_check_in__tod__datetime")
-    ).with_columns(
-        _elapsed_hhmmss("as_check_in__tod__datetime").alias("as_check_in__elapsed"),
-        _elapsed_hours("as_check_in__tod__datetime").alias("as_check_in__elapsed__min"),
+        .with_columns(pl.coalesce("_arr_s", "_dep_s").alias("_ref_s"))
+        .with_columns(
+            pl.col("_ref_s")
+            .shift(1, fill_value=RACE_START_S)
+            .over(["year", "bib"])
+            .alias("_prev_ref_s")
+        )
+        .with_columns(
+            ((pl.col("_prev_ref_s") - pl.col("_ref_s")) > INVERSION_TOLERANCE_S)
+            .cast(pl.Int32)
+            .alias("_is_cross")
+        )
+        .with_columns(
+            pl.col("_is_cross").cum_sum().over(["year", "bib"]).alias("_cross_cum")
+        )
+        .with_columns(
+            # Cap day offset at 1 — only one midnight crossing possible in a 36h race
+            pl.col("_cross_cum").clip(upper_bound=1).alias("_day_offset"),
+            # Correct only the row where the second+ crossing was detected, not all
+            # subsequent rows. Rows with _is_cross=0 pass through unchanged even
+            # if _cross_cum is already >= 2. The +12 h fix must also keep the row
+            # within the 36 h cutoff (day offset is already 1 here) — if it would
+            # not, the apparent backward jump came from an outlier on the PREVIOUS
+            # row, so this row's raw value stands.
+            pl.when(
+                (pl.col("_is_cross") == 1)
+                & (pl.col("_cross_cum") >= 2)
+                & ((86400 + pl.col("_ref_s") + 12 * 3600 - RACE_START_S) <= 36 * 3600)
+            )
+            .then(pl.col("_ref_s") + 12 * 3600)
+            .otherwise(pl.col("_ref_s"))
+            .alias("_ref_s_corr"),
+        )
+        .with_columns(
+            # When arrival is present the reference IS the arrival, so the corrected
+            # reference is the corrected arrival; otherwise arrival stays null.
+            pl.when(pl.col("_arr_s").is_not_null())
+            .then(pl.col("_ref_s_corr"))
+            .otherwise(None)
+            .alias("_arr_s_corr"),
+        )
+        .with_columns(
+            pl.when(pl.col("_arr_s_corr").is_not_null())
+            .then(
+                pl.col("_race_midnight")
+                + pl.duration(seconds=pl.col("_arr_s_corr"))
+                + pl.duration(days=pl.col("_day_offset"))
+            )
+            .otherwise(None)
+            .alias("as_check_in__tod__datetime")
+        )
+        .with_columns(
+            _elapsed_hhmmss("as_check_in__tod__datetime").alias("as_check_in__elapsed"),
+            _elapsed_hours("as_check_in__tod__datetime").alias(
+                "as_check_in__elapsed__min"
+            ),
+        )
     )
 
-    # Departure: compare against the corrected arrival seconds for the same row.
-    # Same AM/PM rule: if already on day+1 and departure appears before corrected
-    # arrival, add 12 h instead of another day.
-    df = df.with_columns(
-        pl.when(pl.col("as_check_out__tod").is_not_null())
-        .then(_tod_to_seconds("as_check_out__tod"))
-        .otherwise(None)
-        .alias("_dep_s")
-    ).with_columns(
-        pl.when(pl.col("_dep_s").is_not_null())
-        .then(
-            pl.when(pl.col("_dep_s") < pl.col("_arr_s_corr"))
-            .then(
-                pl.when(pl.col("_arr_day_offset") >= 1)
-                .then(pl.col("_dep_s") + 12 * 3600)  # AM/PM error: add 12h, no extra day
-                .otherwise(pl.col("_dep_s"))           # genuine midnight crossing: handled below
-            )
-            .otherwise(pl.col("_dep_s"))
-        )
-        .otherwise(None)
-        .alias("_dep_s_corr"),
-        # Extra day only when still on day 0 and departure genuinely crossed midnight
-        pl.when(pl.col("_dep_s").is_not_null())
-        .then(
-            pl.when(
-                (pl.col("_dep_s") < pl.col("_arr_s_corr"))
-                & (pl.col("_arr_day_offset") < 1)
+    # Departure. Classified by the size of the backward jump relative to the
+    # corrected arrival on the same row (seconds-since-midnight):
+    #   - no departure: stays null;
+    #   - departure-only row: the crossing/AM-PM correction already ran on the
+    #     departure via _ref_s, so take the corrected reference directly;
+    #   - jump <= 1 h: timing-entry inversion (departure clocked minutes before
+    #     its arrival) — pass through as-is;
+    #   - 1 h < jump <= 6 h: untrustworthy entry (seen ~2 h before arrival with
+    #     no plausible correction) — null it, downstream imputation fills it;
+    #   - 6 h < jump <= 18 h: AM/PM data-entry error — add 12 h;
+    #   - jump > 18 h: genuine midnight crossing — extra day added below.
+    GARBAGE_JUMP_MAX_S = 6 * 3600
+    AMPM_JUMP_MAX_S = 18 * 3600
+    _jump = pl.col("_arr_s_corr") - pl.col("_dep_s")
+    df = (
+        df.with_columns(
+            pl.when(pl.col("_dep_s").is_null())
+            .then(None)
+            .when(pl.col("_arr_s").is_null())
+            .then(pl.col("_ref_s_corr"))
+            .when(_jump <= INVERSION_TOLERANCE_S)
+            .then(pl.col("_dep_s"))
+            .when(_jump <= GARBAGE_JUMP_MAX_S)
+            .then(None)
+            .when((_jump <= AMPM_JUMP_MAX_S) | (pl.col("_day_offset") >= 1))
+            .then(pl.col("_dep_s") + 12 * 3600)
+            .otherwise(pl.col("_dep_s"))  # genuine midnight crossing: handled below
+            .alias("_dep_s_corr"),
+            # Extra day only when still on day 0 and departure genuinely crossed
+            # midnight after an arrival on the same row.
+            pl.when(pl.col("_dep_s").is_null())
+            .then(None)
+            .when(
+                pl.col("_arr_s").is_not_null()
+                & (_jump > AMPM_JUMP_MAX_S)
+                & (pl.col("_day_offset") < 1)
             )
             .then(pl.lit(1))
             .otherwise(pl.lit(0))
+            .alias("_dep_day_extra"),
         )
-        .otherwise(None)
-        .alias("_dep_day_extra"),
-    ).with_columns(
-        pl.when(pl.col("_dep_s_corr").is_not_null())
-        .then(
-            pl.col("_race_midnight")
-            + pl.duration(seconds=pl.col("_dep_s_corr"))
-            + pl.duration(days=pl.col("_arr_day_offset") + pl.col("_dep_day_extra"))
+        .with_columns(
+            pl.when(pl.col("_dep_s_corr").is_not_null())
+            .then(
+                pl.col("_race_midnight")
+                + pl.duration(seconds=pl.col("_dep_s_corr"))
+                + pl.duration(days=pl.col("_day_offset") + pl.col("_dep_day_extra"))
+            )
+            .otherwise(None)
+            .alias("as_check_out__tod__datetime")
         )
-        .otherwise(None)
-        .alias("_dep_dt")
-    ).with_columns(
-        pl.when(pl.col("_dep_dt").is_not_null())
-        .then(_elapsed_hhmmss("_dep_dt"))
-        .otherwise(None)
-        .alias("as_check_out__elapsed"),
-        pl.when(pl.col("_dep_dt").is_not_null())
-        .then(_elapsed_hours("_dep_dt"))
-        .otherwise(None)
-        .alias("as_check_out__elapsed__min"),
-    ).drop([
-        "_arr_s", "_prev_arr_s", "_is_arr_cross", "_cross_cum",
-        "_arr_s_corr", "_arr_day_offset", "_race_midnight",
-        "_dep_s", "_dep_s_corr", "_dep_day_extra", "_dep_dt",
-    ])
-
-    # e. Join finish_times for demographics and official results
-    ft = (
-        finish_times.filter(pl.col("race_year").is_in([2021, 2022, 2023, 2025]))
-        .select(
-            pl.col("race_year").cast(pl.Int64).alias("year"),
-            pl.col("bib").cast(pl.Int64),
-            pl.col("name"),
-            pl.col("gender"),
-            pl.col("age"),
-            pl.col("city"),
-            pl.col("official_rank"),
-            pl.col("finish_time"),
-            pl.col("finish_elapsed_hrs"),
-            pl.col("finish_elapsed_mins"),
+        .with_columns(
+            pl.when(pl.col("as_check_out__tod__datetime").is_not_null())
+            .then(_elapsed_hhmmss("as_check_out__tod__datetime"))
+            .otherwise(None)
+            .alias("as_check_out__elapsed"),
+            pl.when(pl.col("as_check_out__tod__datetime").is_not_null())
+            .then(_elapsed_hours("as_check_out__tod__datetime"))
+            .otherwise(None)
+            .alias("as_check_out__elapsed__min"),
+        )
+        .drop(
+            [
+                "_arr_s",
+                "_dep_s",
+                "_ref_s",
+                "_prev_ref_s",
+                "_is_cross",
+                "_cross_cum",
+                "_ref_s_corr",
+                "_arr_s_corr",
+                "_day_offset",
+                "_race_midnight",
+                "_dep_s_corr",
+                "_dep_day_extra",
+            ]
         )
     )
-    df = df.with_columns(
-        pl.col("bib").str.replace(r"\*", "").cast(pl.Int64)
-    ).join(
+
+    # e. Join finish_times for demographics and official results
+    ft = finish_times.filter(
+        pl.col("race_year").is_in([2021, 2022, 2023, 2025])
+    ).select(
+        pl.col("race_year").cast(pl.Int64).alias("year"),
+        pl.col("bib").cast(pl.Int64),
+        pl.col("name"),
+        pl.col("gender"),
+        pl.col("age"),
+        pl.col("city"),
+        pl.col("official_rank"),
+        pl.col("finish_time"),
+        pl.col("finish_elapsed_hrs"),
+        pl.col("finish_elapsed_mins"),
+    )
+    df = df.with_columns(pl.col("bib").str.replace(r"\*", "").cast(pl.Int64)).join(
         ft, on=["year", "bib"], how="left"
     )
 
@@ -288,7 +370,11 @@ def enrich_2021_2025_splits(
             pl.col("official_rank").is_not_null().any().alias("has_finish"),
             pl.col("_as_num").max().alias("_max_as_num"),
             pl.col("as_dist_from_start").max().alias("_max_dist"),
-            pl.col("as_check_in__elapsed__min").max().alias("_max_elapsed"),
+            # Departure-only rows have null check-in elapsed, so take the max
+            # over whichever elapsed value each row has.
+            pl.max_horizontal("as_check_in__elapsed__min", "as_check_out__elapsed__min")
+            .max()
+            .alias("_max_elapsed"),
             pl.col("official_rank").first().alias("_official_rank"),
             pl.col("finish_elapsed_hrs").first().alias("_finish_hrs"),
         )
@@ -334,14 +420,17 @@ def enrich_2021_2025_splits(
     )
 
     # Drop the placeholder columns from the wide source and join computed ones
-    df = (
-        df.drop(["FinishRank", "MaxAS", "MaxTime", "OverallRank", "_as_num"])
-        .join(runner_meta, on=["year", "bib"], how="left")
+    df = df.drop(["FinishRank", "MaxAS", "MaxTime", "OverallRank", "_as_num"]).join(
+        runner_meta, on=["year", "bib"], how="left"
     )
 
-    # g. Compute per-AS arrival rank (single column), replacing source arr_rank
+    # g. Compute per-AS arrival rank (single column), replacing source arr_rank.
+    # Departure-only rows (null arrival datetime) sort last within a station.
     df = (
-        df.sort(["year", "as_index", "as_check_in__tod__datetime", "bib"])
+        df.sort(
+            ["year", "as_index", "as_check_in__tod__datetime", "bib"],
+            nulls_last=True,
+        )
         .with_columns(
             (pl.int_range(pl.len()).over(["year", "as_index"]) + 1).alias("as_rank")
         )
@@ -353,16 +442,34 @@ def enrich_2021_2025_splits(
 
     # i. Final column order
     ordered_cols = [
-        "year", "bib", "name", "gender", "age", "city",
-        "as_index", "as_name",
-        "as_check_in__tod", "as_check_out__tod",
-        "as_check_in__elapsed", "as_check_out__elapsed",
-        "race_datetime", "as_check_in__tod__datetime",
+        "year",
+        "bib",
+        "name",
+        "gender",
+        "age",
+        "city",
+        "as_index",
+        "as_name",
+        "as_check_in__tod",
+        "as_check_out__tod",
+        "as_check_in__elapsed",
+        "as_check_out__elapsed",
+        "race_datetime",
+        "as_check_in__tod__datetime",
+        "as_check_out__tod__datetime",
         "as_check_in__elapsed__min",
-        "as_dist_from_start", "as_dist_incr",
-        "MaxAS", "FinishRank", "OverallRank", "MaxTime",
+        "as_check_out__elapsed__min",
+        "as_dist_from_start",
+        "as_dist_incr",
+        "MaxAS",
+        "FinishRank",
+        "OverallRank",
+        "MaxTime",
         "as_rank",
-        "official_rank", "finish_time", "finish_elapsed_hrs", "finish_elapsed_mins",
+        "official_rank",
+        "finish_time",
+        "finish_elapsed_hrs",
+        "finish_elapsed_mins",
         "OriginalOrder",
     ]
     # Only include columns that exist (guards against schema drift)
@@ -379,6 +486,21 @@ def plot_pace_chart(df: pl.DataFrame) -> go.Figure:
     A year-selector button strip is embedded in the figure so only one year's
     runners are visible at a time. Defaults to the earliest available year.
     """
+    # Departure-only rows (e.g. most of 2025) have no check-in elapsed value;
+    # fall back to the check-out time so runner lines stay continuous.
+    df = df.with_columns(
+        pl.coalesce("as_check_in__elapsed__min", "as_check_out__elapsed__min").alias(
+            "_plot_elapsed_hrs"
+        ),
+        pl.coalesce("as_check_in__tod", "as_check_out__tod").alias("_plot_tod"),
+        pl.coalesce("as_check_in__elapsed", "as_check_out__elapsed").alias(
+            "_plot_elapsed"
+        ),
+        pl.coalesce("as_check_in__tod__datetime", "as_check_out__tod__datetime").alias(
+            "_plot_datetime"
+        ),
+    )
+
     years = sorted(df["year"].unique().to_list())
     default_year = years[0]
 
@@ -386,22 +508,19 @@ def plot_pace_chart(df: pl.DataFrame) -> go.Figure:
     trace_years: list[int] = []
 
     for year in years:
-        year_df = df.filter(pl.col("year") == year).sort(
-            ["bib", "as_dist_from_start"]
-        )
+        year_df = df.filter(pl.col("year") == year).sort(["bib", "as_dist_from_start"])
         for bib in sorted(year_df["bib"].unique().to_list()):
             runner = year_df.filter(pl.col("bib") == bib)
             first_name = runner["name"].drop_nulls().first()
             bib_str = str(int(bib))
             label = bib_str if first_name is None else f"{bib_str} – {first_name}"
             hover_rows = runner.select(
-                ["as_index", "as_name", "as_check_in__tod",
-                 "as_check_in__elapsed", "as_check_in__tod__datetime"]
+                ["as_index", "as_name", "_plot_tod", "_plot_elapsed", "_plot_datetime"]
             ).rows()
             fig.add_trace(
                 go.Scatter(
                     x=runner["as_dist_from_start"].to_list(),
-                    y=runner["as_check_in__elapsed__min"].to_list(),
+                    y=runner["_plot_elapsed_hrs"].to_list(),
                     mode="lines+markers",
                     name=label,
                     visible=(year == default_year),
@@ -469,7 +588,11 @@ def process_2016_2017_splits(
     # a. Clean and cast. Drop columns that may or may not exist depending on the
     # source file version (time_check/time_adjustment were removed in a later cut;
     # the trailing empty column '' comes from a trailing comma in the CSV).
-    _cols_to_drop = [c for c in ["time_check", "time_adjustment", "name", "gender", "age", ""] if c in raw.columns]
+    _cols_to_drop = [
+        c
+        for c in ["time_check", "time_adjustment", "name", "gender", "age", ""]
+        if c in raw.columns
+    ]
     df = (
         raw.filter(pl.col("year").is_not_null())
         .drop(_cols_to_drop)
@@ -491,20 +614,17 @@ def process_2016_2017_splits(
     df = df.join(ai, on=["year", "as_index"], how="left")
 
     # c. Join finish_times for demographics and official results
-    ft = (
-        finish_times.filter(pl.col("race_year").is_in([2016, 2017]))
-        .select(
-            pl.col("race_year").cast(pl.Int64).alias("year"),
-            pl.col("bib").cast(pl.Int64),
-            pl.col("name"),
-            pl.col("gender"),
-            pl.col("age"),
-            pl.col("city"),
-            pl.col("official_rank"),
-            pl.col("finish_time"),
-            pl.col("finish_elapsed_hrs"),
-            pl.col("finish_elapsed_mins"),
-        )
+    ft = finish_times.filter(pl.col("race_year").is_in([2016, 2017])).select(
+        pl.col("race_year").cast(pl.Int64).alias("year"),
+        pl.col("bib").cast(pl.Int64),
+        pl.col("name"),
+        pl.col("gender"),
+        pl.col("age"),
+        pl.col("city"),
+        pl.col("official_rank"),
+        pl.col("finish_time"),
+        pl.col("finish_elapsed_hrs"),
+        pl.col("finish_elapsed_mins"),
     )
     df = df.join(ft, on=["year", "bib"], how="left")
 
@@ -535,10 +655,12 @@ def process_2016_2017_splits(
             pl.when(pl.col("has_finish"))
             .then(pl.lit("FINISH"))
             .otherwise(
-                pl.concat_str([
-                    pl.lit("AS_"),
-                    pl.col("_max_as_num").cast(pl.String).str.zfill(2),
-                ])
+                pl.concat_str(
+                    [
+                        pl.lit("AS_"),
+                        pl.col("_max_as_num").cast(pl.String).str.zfill(2),
+                    ]
+                )
             )
             .alias("MaxAS"),
             pl.when(pl.col("has_finish"))
@@ -564,11 +686,8 @@ def process_2016_2017_splits(
     df = df.drop("_as_num").join(runner_meta, on=["year", "bib"], how="left")
 
     # e. Compute as_rank from elapsed time (TOD is absent in 2016-2017)
-    df = (
-        df.sort(["year", "as_index", "as_check_in__elapsed__min", "bib"])
-        .with_columns(
-            (pl.int_range(pl.len()).over(["year", "as_index"]) + 1).alias("as_rank")
-        )
+    df = df.sort(["year", "as_index", "as_check_in__elapsed__min", "bib"]).with_columns(
+        (pl.int_range(pl.len()).over(["year", "as_index"]) + 1).alias("as_rank")
     )
 
     # f. Normalize datetime strings to ISO format
@@ -589,16 +708,32 @@ def process_2016_2017_splits(
     # h. Drop flag_finish and select final column order
     df = df.drop("flag_finish")
     ordered_cols = [
-        "year", "bib", "name", "gender", "age", "city",
-        "as_index", "as_name",
-        "as_check_in__tod", "as_check_out__tod",
-        "as_check_in__elapsed", "as_check_out__elapsed",
-        "race_datetime", "as_check_in__tod__datetime",
+        "year",
+        "bib",
+        "name",
+        "gender",
+        "age",
+        "city",
+        "as_index",
+        "as_name",
+        "as_check_in__tod",
+        "as_check_out__tod",
+        "as_check_in__elapsed",
+        "as_check_out__elapsed",
+        "race_datetime",
+        "as_check_in__tod__datetime",
         "as_check_in__elapsed__min",
-        "as_dist_from_start", "as_dist_incr",
-        "MaxAS", "FinishRank", "OverallRank", "MaxTime",
+        "as_dist_from_start",
+        "as_dist_incr",
+        "MaxAS",
+        "FinishRank",
+        "OverallRank",
+        "MaxTime",
         "as_rank",
-        "official_rank", "finish_time", "finish_elapsed_hrs", "finish_elapsed_mins",
+        "official_rank",
+        "finish_time",
+        "finish_elapsed_hrs",
+        "finish_elapsed_mins",
         "OriginalOrder",
     ]
     final_cols = [c for c in ordered_cols if c in df.columns]
@@ -614,8 +749,14 @@ def combine_splits(
     Inputs: es_splits_2016_2017_processed, es_splits_2021_2025_processed
     Outputs: es_splits_all
     """
-    float_cols = ["as_check_in__elapsed__min", "as_dist_from_start",
-                  "as_dist_incr", "finish_elapsed_hrs", "finish_elapsed_mins"]
+    float_cols = [
+        "as_check_in__elapsed__min",
+        "as_check_out__elapsed__min",
+        "as_dist_from_start",
+        "as_dist_incr",
+        "finish_elapsed_hrs",
+        "finish_elapsed_mins",
+    ]
     int_cols = ["year", "bib", "OverallRank", "as_rank", "official_rank"]
 
     def _normalise_types(df: pl.DataFrame) -> pl.DataFrame:
