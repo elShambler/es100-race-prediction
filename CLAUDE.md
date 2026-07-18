@@ -19,6 +19,7 @@ uv run kedro run
 
 # Run a single pipeline
 uv run kedro run --pipeline data_processing
+uv run kedro run --pipeline course           # parse 2026 GPX + build station crosswalk
 uv run kedro run --pipeline feature_engineering
 uv run kedro run --pipeline reporting
 
@@ -62,7 +63,7 @@ uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
 | `intermediate` | `data/02_intermediate/` | Node outputs, regenerable |
 | `feature` | `data/04_feature/` | Imputed splits and interval-pace features |
 | `models` | `data/06_models/` | Pickled stoppage model + validation metrics |
-| `reporting` | `data/08_reporting/` | Plotly charts, exported artifacts |
+| `reporting` | `data/08_reporting/` | Plotly charts, HTML dashboard, static blog figures (PNG/SVG) |
 
 Intermediate datasets that need Kedro Viz table previews use `PolarsPreviewCSVDataset` (defined in `src/.../datasets/polars_preview_csv_dataset.py`) instead of bare `polars.CSVDataset`. Raw datasets load with `infer_schema_length: 0` plus `schema_overrides` when column types need to be pinned.
 
@@ -109,6 +110,31 @@ es_splits_2021_2025 (raw CSV)
 
 **`as_check_in__elapsed__min` / `as_check_out__elapsed__min` store decimal hours** (e.g., 1.75 = 1 h 45 min), matching the existing 2016-2017 data convention despite the "min" suffix. Catalog entries pin these columns to Float64 via `schema_overrides` because leading rows can be all-null (String inference).
 
+### Course Pipeline (`pipelines/course/`)
+
+Parses the 2026 race GPX (`data/01_raw/Eastern States 100 - Full Course.gpx`, a
+Footpath export: one `<rte>` + AS `<wpt>`s) and builds the historical→2026
+station crosswalk. Uses stdlib `xml.etree` (no gpxpy dependency).
+
+```
+parse__course_gpx        # rtept list → cumulative miles (haversine); snap each wpt to nearest vertex
+    → es_course_route (02_intermediate: seq, lat, lon, ele_m, cum_mi)
+    → es_course_stations (02_intermediate: station_id 0–16, name, lat/lon, route_seq, cum_mi, scaled_mi)
+map__historical_stations # match every (year, as_index) to a 2026 station by distance
+    → es_station_xwalk (02_intermediate: …, station_2026, station_2026_name, station_mi_2026, delta_mi)
+```
+
+- GPX miles are scaled by `official_finish_mi / gpx_total_mi` (params in
+  `conf/base/parameters_course.yml`) so `scaled_mi` matches the official 103.1;
+  raw lat/lon are kept unscaled for the map.
+- **Never join on `as_index` across eras** — AS numbering is renumbered
+  (2023/25 drop a station, Blackwell is AS_12 vs AS_13 earlier). The crosswalk
+  matches on scaled distance-from-start only, nulling matches beyond
+  `max_delta_mi` (4.0). Many-to-one is expected (Algerine + Long Branch →
+  Cedar Run). `map_historical_stations` also takes `es_splits_all` and unions in
+  split-only `(year, as_index)` keys via anti-join, so the 2016/17 finish row
+  (`AS_18`, absent from as_info) still maps to the 2026 Finish.
+
 ### Feature Engineering Pipeline (`pipelines/feature_engineering/`)
 
 Consumes `es_splits_2021_2025_processed` (2021–2025 only; 2016-2017 has no check-out data at all):
@@ -120,21 +146,61 @@ impute__missing_times    # fills missing check-in/check-out elapsed hours
     → es_splits_2021_2025_imputed (04_feature)
 features__interval_pace  # interval pace, overall pace, pace ratio per runner×AS
     → es_interval_features (04_feature)
+features__cumulative_ratio  # all-years cumulative-pace-vs-final-pace, finishers only
+    → es_cumulative_ratio (04_feature)
 ```
+
+**`features__cumulative_ratio`** (inputs `es_splits_all`, `es_asinfo_historical`,
+`es_station_xwalk`) is the shared artifact behind both the static blog figure and
+the dashboard planner card, so the logic lives in one place:
+
+- Finishers only (`FinishRank != "DNF"`, `finish_elapsed_mins` non-null), rows
+  with elapsed + `as_dist_from_start > 0`; **all six years incl. 2016-2017**.
+- `cum_pace = as_check_in__elapsed__min * 60 / as_dist_from_start` — the ×60 is
+  the decimal-hours trap (the `__min` column is really hours). `final_pace =
+  finish_elapsed_mins / per_year_finish_dist` (finish distance from the
+  `flag_finish` row). `cum_ratio = cum_pace / final_pace` (≈1.0 at the finish
+  station is the sentinel that the ×60 is right).
+- `finish_hr_block = floor(finish_elapsed_hrs + 0.5)` (block = [h−0.5, h+0.5)),
+  left-joined to `es_station_xwalk` for `station_2026` / `station_mi_2026`.
 
 ### Reporting Pipeline (`pipelines/reporting/`)
 
 `build__as_dashboard` aggregates `es_interval_features` per year (KPIs, arrival
 windows, observed stoppage by cohort, leg pace ratios, hourly flow, DNF drop
-points) and injects the JSON into `template.html` (sits next to `nodes.py`) →
-`es_as_dashboard` = `data/08_reporting/es_as_dashboard.html`, a fully
-self-contained page (inline CSS/JS, no external deps) intended to be dropped
-onto the race website. Design notes: charts are hand-built SVG following the
-dataviz skill (validated palette, light+dark via CSS custom properties, per-mark
-tooltips, table-view toggle per card). Stoppage medians are suppressed where
-observed check-in/out pairs cover <30% of a station's visits (2025's sparse
+points) plus three **year-independent, all-years** planner cards, and injects the
+JSON into `template.html` (sits next to `nodes.py`) → `es_as_dashboard` =
+`data/08_reporting/es_as_dashboard.html`. The page is self-contained (inline
+CSS/JS) **except the course-map card**, which loads Leaflet 1.9.4 + OpenStreetMap
+tiles over the network (accepted trade-off; the map degrades to a note offline,
+every other card still works). Design notes: charts are hand-built SVG following
+the dataviz skill (validated palette, light+dark via CSS custom properties,
+per-mark tooltips, table-view toggle per card). Stoppage medians are suppressed
+where observed check-in/out pairs cover <30% of a station's visits (2025's sparse
 check-ins leave a biased subset); the flow heatmap color scale caps at the 95th
 percentile of non-zero cells.
+
+- Inputs beyond `es_interval_features`: `es_cumulative_ratio`, `es_splits_all`,
+  `es_course_route`, `es_course_stations`, `es_station_xwalk`, `params:reporting`.
+- Top-level payload keys `planner` and `course` (helpers `_planner_payload` /
+  `_course_payload`) drive the planner scatter (cumulative ÷ final pace, station
+  selector + goal-finish trend line), the arrival-time distribution (half-hour
+  bins + goal-cohort p25–p75 band), and the Leaflet map (highlights the leg into
+  the selected station). Per-year cards cover 2021–2025; planner cards pool all
+  years 2016–2025.
+- Size control (`conf/base/parameters_reporting.yml`): the scatter is
+  stratified-sampled to `max_scatter_points` (aggregates always from full data);
+  the route is downsampled to `max_route_points` keeping station vertices, coords
+  rounded to `coord_decimals`. Page is ~190 KB (well under the 1 MB test bound);
+  the existing `</`→`<\/` JSON escaping still applies.
+- **Static blog figures**: `plot__blog_cumulative_ratio` (input
+  `es_cumulative_ratio`) renders the cumulative-ratio scatter with `mpl_theme`
+  → `es_blog_figures` (PNG) + `es_blog_figures_svg` (SVG) under
+  `data/08_reporting/blog_figures/`. `MatplotlibWriter` saves through a buffer so
+  it can't infer format from the filename — each format needs its **own catalog
+  entry with an explicit `format:` save_arg** and the node returns a tuple of two
+  `{filename: fig}` dicts (a single dict with both extensions silently wrote two
+  identical PNGs).
 
 - Stoppage target/predictions are in **minutes**; elapsed columns remain decimal hours.
 - Trains on rows with both times observed (~7k, mostly 2021-2023), validated by year-holdout (params in `conf/base/parameters_feature_engineering.yml`).
