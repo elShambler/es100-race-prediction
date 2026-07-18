@@ -1,0 +1,16 @@
+# Reporting-pipeline knobs. These bound the JSON payload the dashboard embeds so
+# the self-contained HTML stays a reasonable size while the aggregates (which are
+# always computed from full data) remain exact.
+reporting:
+  # Planner scatter is thinned to at most this many points, stratified by
+  # finish-hour block so every cohort stays represented. Aggregates (per-station
+  # averages, cohort trends) are computed from the full data before sampling.
+  max_scatter_points: 4000
+  # Finish-hour blocks offered by the planner's estimate input (inclusive).
+  finish_hr_min: 20
+  finish_hr_max: 36
+  # 2026 route is downsampled to at most this many vertices (station vertices are
+  # always kept) so the embedded polyline stays small; coords rounded to this many
+  # decimals (~1 m at these latitudes).
+  max_route_points: 1200
+  coord_decimals: 5

@@ -156,3 +156,64 @@ es_interval_features:
   metadata:
     kedro-viz:
       layer: feature
+
+# 2026 course GPX (Footpath Route Planner export): one route + AS waypoints
+es_course_gpx:
+  type: text.TextDataset
+  filepath: 'data/01_raw/Eastern States 100 - Full Course.gpx'
+
+# Full-resolution 2026 route: lat/lon/elevation with cumulative miles
+es_course_route:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_course_route.csv
+  metadata:
+    kedro-viz:
+      layer: intermediate
+
+# 2026 aid-station waypoints snapped to the route (GPX miles + official-scale miles)
+es_course_stations:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_course_stations.csv
+  metadata:
+    kedro-viz:
+      layer: intermediate
+
+# Historical (year, as_index) → 2026 station crosswalk, matched on distance
+es_station_xwalk:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/02_intermediate/es_station_xwalk.csv
+  metadata:
+    kedro-viz:
+      layer: intermediate
+
+# Cumulative pace ÷ final pace per finisher × aid station, all years 2016–2025
+es_cumulative_ratio:
+  type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
+  filepath: data/04_feature/es_cumulative_ratio.csv
+  metadata:
+    kedro-viz:
+      layer: feature
+
+# Blog-ready static figures rendered with the ES matplotlib theme.
+# MatplotlibWriter saves through a buffer, so savefig cannot infer the format
+# from the filename — each format needs its own entry with an explicit format.
+es_blog_figures:
+  type: matplotlib.MatplotlibWriter
+  filepath: data/08_reporting/blog_figures
+  save_args:
+    dpi: 200
+    bbox_inches: tight
+    format: png
+  metadata:
+    kedro-viz:
+      layer: reporting
+
+es_blog_figures_svg:
+  type: matplotlib.MatplotlibWriter
+  filepath: data/08_reporting/blog_figures
+  save_args:
+    bbox_inches: tight
+    format: svg
+  metadata:
+    kedro-viz:
+      layer: reporting

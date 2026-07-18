@@ -1,0 +1,8 @@
+course:
+  # Official race distance used to rescale GPX miles onto the historical
+  # dist_from_start axis (GPX geometry never measures exactly 103.1).
+  official_finish_mi: 103.1
+  station_match:
+    # A historical station further than this from every 2026 station stays
+    # unmapped rather than snapping to a wrong neighbor.
+    max_delta_mi: 4.0
