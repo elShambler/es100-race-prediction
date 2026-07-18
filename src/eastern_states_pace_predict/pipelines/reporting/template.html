@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eastern States 100 — Aid Station Dashboard</title>
+<style>
+  .es-dash {
+    color-scheme: light;
+    --page:         #f9f9f7;
+    --surface:      #fcfcfb;
+    --ink:          #0b0b0b;
+    --ink-2:        #52514e;
+    --muted:        #898781;
+    --grid:         #e1e0d9;
+    --baseline:     #c3c2b7;
+    --border:       rgba(11,11,11,0.10);
+    --series:       #2a78d6;   /* blue — runners */
+    --series-strong:#1c5cab;
+    --band-outer:   #cde2fb;
+    --band-inner:   #86b6ef;
+    --deemph:       #c9c8c1;   /* de-emphasis bars (finisher context) */
+    --div-slow:     #e34948;   /* diverging pole: slower than own pace */
+    --div-fast:     #2a78d6;   /* diverging pole: faster */
+    --div-mid:      #f0efec;
+    --heat-1: #cde2fb; --heat-2: #9ec5f4; --heat-3: #6da7ec; --heat-4: #3987e5;
+    --heat-5: #256abf; --heat-6: #184f95; --heat-7: #0d366b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .es-dash {
+      color-scheme: dark;
+      --page:         #0d0d0d;
+      --surface:      #1a1a19;
+      --ink:          #ffffff;
+      --ink-2:        #c3c2b7;
+      --muted:        #898781;
+      --grid:         #2c2c2a;
+      --baseline:     #383835;
+      --border:       rgba(255,255,255,0.10);
+      --series:       #3987e5;
+      --series-strong:#86b6ef;
+      --band-outer:   #184f95;
+      --band-inner:   #256abf;
+      --deemph:       #4a4a47;
+      --div-slow:     #e66767;
+      --div-fast:     #3987e5;
+      --div-mid:      #383835;
+      --heat-1: #0d366b; --heat-2: #104281; --heat-3: #184f95; --heat-4: #256abf;
+      --heat-5: #3987e5; --heat-6: #6da7ec; --heat-7: #9ec5f4;
+    }
+  }
+  :root[data-theme="dark"] .es-dash {
+    color-scheme: dark;
+    --page:         #0d0d0d;
+    --surface:      #1a1a19;
+    --ink:          #ffffff;
+    --ink-2:        #c3c2b7;
+    --muted:        #898781;
+    --grid:         #2c2c2a;
+    --baseline:     #383835;
+    --border:       rgba(255,255,255,0.10);
+    --series:       #3987e5;
+    --series-strong:#86b6ef;
+    --band-outer:   #184f95;
+    --band-inner:   #256abf;
+    --deemph:       #4a4a47;
+    --div-slow:     #e66767;
+    --div-fast:     #3987e5;
+    --div-mid:      #383835;
+    --heat-1: #0d366b; --heat-2: #104281; --heat-3: #184f95; --heat-4: #256abf;
+    --heat-5: #3987e5; --heat-6: #6da7ec; --heat-7: #9ec5f4;
+  }
+
+  .es-dash {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page);
+    color: var(--ink);
+    margin: 0;
+    padding: 24px 16px 48px;
+  }
+  .es-dash * { box-sizing: border-box; }
+  .es-wrap { max-width: 1080px; margin: 0 auto; }
+  .es-dash h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; }
+  .es-dash .sub { color: var(--ink-2); font-size: 14px; margin: 0 0 20px; }
+
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 20px; }
+  .filters .flabel { font-size: 13px; color: var(--ink-2); margin-right: 4px; }
+  .yearpill {
+    font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink-2);
+    cursor: pointer;
+  }
+  .yearpill:hover { border-color: var(--baseline); }
+  .yearpill[aria-pressed="true"] {
+    background: var(--series); border-color: var(--series);
+    color: #fff; font-weight: 600;
+  }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .tile .tlabel { font-size: 12.5px; color: var(--ink-2); margin-bottom: 6px; }
+  .tile .tvalue { font-size: 28px; font-weight: 600; line-height: 1.1; }
+  .tile .tunit { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 2px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 18px 12px; min-width: 0;
+  }
+  .card.wide { grid-column: 1 / -1; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .chead { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .card h2 { font-size: 15px; font-weight: 650; margin: 0 0 2px; }
+  .card .csub { font-size: 12.5px; color: var(--ink-2); margin: 0 0 10px; }
+  .tbtn {
+    font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; flex: none;
+    border: 1px solid var(--border); background: transparent; color: var(--ink-2); cursor: pointer;
+  }
+  .tbtn:hover { border-color: var(--baseline); }
+
+  .card svg { width: 100%; height: auto; display: block; }
+  .card svg text { font-family: inherit; }
+  .axis-txt { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .row-txt  { font-size: 12px; fill: var(--ink-2); }
+  .val-txt  { font-size: 11.5px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .baseline { stroke: var(--baseline); stroke-width: 1; }
+  .hit { fill: transparent; cursor: pointer; }
+  .hit:focus-visible, .mark:focus-visible { outline: 2px solid var(--series-strong); outline-offset: 1px; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: var(--ink-2); margin: 8px 0 2px; }
+  .lkey { display: inline-flex; align-items: center; gap: 6px; }
+  .lswatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .lscale { display: inline-flex; height: 12px; border-radius: 3px; overflow: hidden; }
+  .lscale i { width: 14px; height: 12px; display: inline-block; }
+
+  .dtable { display: none; width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+  .dtable caption { text-align: left; color: var(--muted); font-size: 12px; padding: 4px 0; caption-side: bottom; }
+  .dtable th, .dtable td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+  .dtable th:first-child, .dtable td:first-child { text-align: left; font-variant-numeric: normal; }
+  .dtable th { color: var(--ink-2); font-weight: 600; }
+  .card.show-table svg, .card.show-table .legend { display: none; }
+  .card.show-table .dtable { display: table; }
+
+  .tip {
+    position: fixed; z-index: 10; pointer-events: none; display: none;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    padding: 8px 10px; font-size: 12.5px; max-width: 260px;
+  }
+  .tip .t-title { color: var(--ink-2); margin-bottom: 4px; font-size: 12px; }
+  .tip .t-row { display: flex; align-items: baseline; gap: 8px; }
+  .tip .t-key { width: 10px; height: 3px; border-radius: 2px; flex: none; align-self: center; }
+  .tip .t-val { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tip .t-lab { color: var(--ink-2); }
+
+  .foot { color: var(--muted); font-size: 12px; margin-top: 18px; line-height: 1.5; }
+</style>
+</head>
+<body class="es-dash">
+<div class="es-wrap">
+  <h1>Eastern States 100 — Aid Station Dashboard</h1>
+  <p class="sub">How runners move through the course — arrival windows, stops, leg difficulty, and drop points. For crews planning race day and race organizers.</p>
+
+  <nav class="filters" aria-label="Filters">
+    <span class="flabel">Race year</span>
+    <span id="yearpills"></span>
+  </nav>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <section class="card wide" id="card-arrivals"></section>
+    <section class="card" id="card-stoppage"></section>
+    <section class="card" id="card-legs"></section>
+    <section class="card wide" id="card-heat"></section>
+    <section class="card" id="card-attrition"></section>
+    <section class="card" id="card-about"></section>
+  </div>
+
+  <p class="foot">
+    Times are clock time; the race starts 05:00, “+1” marks the second day.
+    Most 2025 check-in times are estimated from recorded departures via a
+    stoppage-time model; the “time in aid stations” chart uses only directly
+    observed check-in/out pairs. Station groups with fewer than 5 runners are
+    not shown.
+  </p>
+</div>
+<div class="tip" id="tip" role="status"></div>
+
+<script>
+"use strict";
+const DATA = /*__DATA__*/null;
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const state = { year: String(DATA.years[0]) };
+
+/* ---------- tiny DOM helpers (textContent only — no HTML injection) ---------- */
+function h(tag, attrs, ...children) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const c of children) if (c) n.append(c);
+  return n;
+}
+function s(tag, attrs) {
+  const n = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "text") n.textContent = v;
+    else n.setAttribute(k, v);
+  }
+  return n;
+}
+/* one-end-rounded bar path: horizontal (dir=1 right end round, -1 left) */
+function barH(x, y, w, hgt, r, dir) {
+  r = Math.min(r, Math.abs(w), hgt / 2);
+  if (w <= 0) return "";
+  if (dir > 0)
+    return `M${x},${y} h${w - r} a${r},${r} 0 0 1 ${r},${r} v${hgt - 2 * r} a${r},${r} 0 0 1 ${-r},${r} h${-(w - r)} z`;
+  return `M${x + w},${y} h${-(w - r)} a${r},${r} 0 0 0 ${-r},${r} v${hgt - 2 * r} a${r},${r} 0 0 0 ${r},${r} h${w - r} z`;
+}
+/* vertical column, rounded at the top (up=true) or bottom */
+function barV(x, y, w, hgt, r, up) {
+  r = Math.min(r, w / 2, Math.abs(hgt));
+  if (hgt <= 0) return "";
+  if (up)
+    return `M${x},${y + hgt} v${-(hgt - r)} a${r},${r} 0 0 1 ${r},${-r} h${w - 2 * r} a${r},${r} 0 0 1 ${r},${r} v${hgt - r} z`;
+  return `M${x},${y} v${hgt - r} a${r},${r} 0 0 0 ${r},${r} h${w - 2 * r} a${r},${r} 0 0 0 ${r},${-r} v${-(hgt - r)} z`;
+}
+
+/* ---------- tooltip: value leads, label follows; keyboard focus = hover ---------- */
+const tip = document.getElementById("tip");
+function tipShow(evt, title, rows) {
+  tip.replaceChildren(h("div", { class: "t-title", text: title }));
+  for (const r of rows) {
+    const row = h("div", { class: "t-row" });
+    if (r.key) row.append(h("span", { class: "t-key", style: "background:" + r.key }));
+    row.append(h("span", { class: "t-val", text: r.value }));
+    row.append(h("span", { class: "t-lab", text: r.label }));
+    tip.append(row);
+  }
+  tip.style.display = "block";
+  tipMove(evt);
+}
+function tipMove(evt) {
+  let x = 14, y = 14;
+  if (evt && "clientX" in evt) { x = evt.clientX + 14; y = evt.clientY + 14; }
+  else if (evt && evt.target) {
+    const b = evt.target.getBoundingClientRect(); x = b.right + 10; y = b.top;
+  }
+  const bw = tip.offsetWidth, bh = tip.offsetHeight;
+  if (x + bw > innerWidth - 8) x = Math.max(8, x - bw - 28);
+  if (y + bh > innerHeight - 8) y = Math.max(8, innerHeight - bh - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function tipHide() { tip.style.display = "none"; }
+function hover(node, fn) {
+  node.addEventListener("pointerenter", (e) => fn(e));
+  node.addEventListener("pointermove", (e) => tipMove(e));
+  node.addEventListener("pointerleave", tipHide);
+  node.setAttribute("tabindex", "0");
+  node.addEventListener("focus", (e) => fn(e));
+  node.addEventListener("blur", tipHide);
+}
+
+/* ---------- formatting ---------- */
+const fmtTod = (hrs) => {
+  const t = 5 + hrs, day = Math.floor(t / 24), tod = t - day * 24;
+  let hh = Math.floor(tod), mm = Math.round((tod - hh) * 60);
+  if (mm === 60) { hh += 1; mm = 0; }
+  return String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0") + (day >= 1 ? " +1" : "");
+};
+const fmtMin = (m) => (m == null ? "–" : Math.round(m) + " min");
+const fmt1 = (v) => (v == null ? "–" : (Math.round(v * 10) / 10).toFixed(1));
+const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
+
+/* ---------- card scaffolding with chart/table toggle ---------- */
+function card(id, title, subtitle) {
+  const root = document.getElementById(id);
+  root.replaceChildren();
+  const btn = h("button", {
+    class: "tbtn", "aria-pressed": "false", text: "Table view",
+    onclick: () => {
+      const on = root.classList.toggle("show-table");
+      btn.setAttribute("aria-pressed", String(on));
+      btn.textContent = on ? "Chart view" : "Table view";
+    },
+  });
+  root.append(
+    h("div", { class: "chead" },
+      h("div", {}, h("h2", { text: title }), h("p", { class: "csub", text: subtitle })),
+      btn),
+  );
+  return root;
+}
+function dataTable(cols, rows, caption) {
+  const t = h("table", { class: "dtable" });
+  t.append(h("caption", { text: caption }));
+  const tr = h("tr");
+  for (const c of cols) tr.append(h("th", { scope: "col", text: c }));
+  t.append(h("thead", {}, tr));
+  const tb = h("tbody");
+  for (const r of rows) {
+    const row = h("tr");
+    r.forEach((v) => row.append(h("td", { text: v == null ? "–" : String(v) })));
+    tb.append(row);
+  }
+  t.append(tb);
+  return t;
+}
+
+/* ---------- chart 1: arrival windows (range bars, one hue in shades) ---------- */
+function renderArrivals(d) {
+  const root = card("card-arrivals", "When runners arrive",
+    "Arrival window at each aid station — middle 50% (solid), 10–90% (light), median tick. Clock time.");
+  const rows = d.arrivals.filter((a) => a.q50 != null);
+  const GL = 190, GR = 84, W = 1040, ROW = 27, TOP = 8, AXH = 26;
+  const H = TOP + rows.length * ROW + AXH;
+  const maxHr = Math.min(36, Math.ceil((Math.max(...rows.map((a) => a.q90)) + 1) / 4) * 4);
+  const x = (hr) => GL + (hr / maxHr) * (W - GL - GR);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Arrival time windows per aid station" });
+
+  for (let hr = 0; hr <= maxHr; hr += 4) {
+    svg.append(s("line", { x1: x(hr), x2: x(hr), y1: TOP, y2: H - AXH, class: "gridline" }));
+    svg.append(s("text", { x: x(hr), y: H - AXH + 16, "text-anchor": "middle", class: "axis-txt", text: fmtTod(hr) }));
+  }
+
+  rows.forEach((a, i) => {
+    const cy = TOP + i * ROW + ROW / 2;
+    svg.append(s("text", { x: GL - 10, y: cy + 4, "text-anchor": "end", class: "row-txt",
+      text: `${a.name} · ${fmt1(a.dist)} mi` }));
+    svg.append(s("rect", { x: x(a.q10), y: cy - 3, width: Math.max(2, x(a.q90) - x(a.q10)), height: 6, rx: 3,
+      fill: "var(--band-outer)" }));
+    svg.append(s("rect", { x: x(a.q25), y: cy - 7, width: Math.max(2, x(a.q75) - x(a.q25)), height: 14, rx: 4,
+      fill: "var(--band-inner)" }));
+    svg.append(s("rect", { x: x(a.q50) - 1.5, y: cy - 9, width: 3, height: 18, rx: 1.5,
+      fill: "var(--series-strong)" }));
+    svg.append(s("text", { x: x(a.q90) + 8, y: cy + 4, class: "val-txt", text: a.tod50 }));
+    const hit = s("rect", { x: GL, y: TOP + i * ROW, width: W - GL - GR, height: ROW, class: "hit" });
+    hover(hit, (e) => tipShow(e, `${a.name} — ${fmt1(a.dist)} mi (${a.n} runners)`, [
+      { value: a.tod50, label: "median arrival", key: cssVar("--series-strong") },
+      { value: `${fmtTod(a.q25)} – ${fmtTod(a.q75)}`, label: "middle 50%", key: cssVar("--band-inner") },
+      { value: `${a.tod10} – ${a.tod90}`, label: "10–90% window", key: cssVar("--band-outer") },
+    ]));
+    svg.append(hit);
+  });
+  root.append(svg);
+  root.append(dataTable(
+    ["Aid station", "Miles", "Earliest 10%", "25%", "Median", "75%", "Latest 90%", "Runners"],
+    rows.map((a) => [a.name, fmt1(a.dist), a.tod10, fmtTod(a.q25), a.tod50, fmtTod(a.q75), a.tod90, a.n]),
+    "Arrival clock times by aid station"));
+}
+
+/* ---------- chart 2: stoppage — emphasis form (DNF is the story) ---------- */
+function renderStoppage(d) {
+  const root = card("card-stoppage", "Time spent in aid stations",
+    "Median observed stop length. Runners who later dropped tend to stop longer; a runner's final stop (dropping at the station) is not counted — no check-out exists.");
+  const rows = d.stoppage.filter((r) => r.finisher != null || r.dnf != null);
+  const GL = 150, GR = 56, W = 520, ROW = 30, TOP = 6, AXH = 26;
+  const H = TOP + rows.length * ROW + AXH;
+  const maxV = Math.max(5, ...rows.map((r) => Math.max(r.finisher || 0, r.dnf || 0)));
+  const maxX = Math.ceil(maxV / 5) * 5;
+  const x = (v) => GL + (v / maxX) * (W - GL - GR);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Median stoppage minutes per aid station, finishers versus non-finishers" });
+
+  for (let v = 0; v <= maxX; v += maxX <= 20 ? 5 : 10) {
+    svg.append(s("line", { x1: x(v), x2: x(v), y1: TOP, y2: H - AXH, class: "gridline" }));
+    svg.append(s("text", { x: x(v), y: H - AXH + 16, "text-anchor": "middle", class: "axis-txt", text: v + "m" }));
+  }
+  svg.append(s("line", { x1: x(0), x2: x(0), y1: TOP, y2: H - AXH, class: "baseline" }));
+
+  const maxDnf = Math.max(...rows.map((r) => r.dnf || 0));
+  rows.forEach((r, i) => {
+    const y0 = TOP + i * ROW;
+    svg.append(s("text", { x: GL - 10, y: y0 + ROW / 2 + 4, "text-anchor": "end", class: "row-txt", text: r.name }));
+    if (r.finisher != null)
+      svg.append(s("path", { d: barH(x(0), y0 + 4, x(r.finisher) - x(0), 9, 4, 1), fill: "var(--deemph)" }));
+    if (r.dnf != null) {
+      svg.append(s("path", { d: barH(x(0), y0 + 15, x(r.dnf) - x(0), 9, 4, 1), fill: "var(--series)" }));
+      if (r.dnf === maxDnf)
+        svg.append(s("text", { x: x(r.dnf) + 6, y: y0 + 23, class: "val-txt", text: Math.round(r.dnf) + " min" }));
+    }
+    const hit = s("rect", { x: 0, y: y0, width: W, height: ROW, class: "hit" });
+    hover(hit, (e) => tipShow(e, r.name, [
+      { value: fmtMin(r.dnf), label: `did not finish (${r.n_dnf} stops)`, key: cssVar("--series") },
+      { value: fmtMin(r.finisher), label: `finishers (${r.n_finisher} stops)`, key: cssVar("--deemph") },
+    ]));
+    svg.append(hit);
+  });
+
+  root.append(h("div", { class: "legend" },
+    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--series)" }), document.createTextNode("Did not finish")),
+    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--deemph)" }), document.createTextNode("Finishers")),
+  ));
+  root.append(svg);
+  root.append(dataTable(
+    ["Aid station", "DNF median (min)", "Finisher median (min)"],
+    rows.map((r) => [r.name, r.dnf == null ? null : Math.round(r.dnf), r.finisher == null ? null : Math.round(r.finisher)]),
+    "Median observed stop length in minutes"));
+}
+
+/* ---------- chart 3: leg difficulty (diverging around 1.0) ---------- */
+function renderLegs(d) {
+  const root = card("card-legs", "Leg difficulty, relative to your own pace",
+    "Median pace on the leg into each station vs the runner's whole-race average (1.0).");
+  const rows = d.legs.filter((r) => r.ratio != null);
+  const GL = 46, GR = 10, W = 520, TOP = 10, AXH = 44, PH = 240;
+  const H = TOP + PH + AXH;
+  const lo = Math.min(0.8, ...rows.map((r) => r.ratio)) - 0.05;
+  const hi = Math.max(1.2, ...rows.map((r) => r.ratio)) + 0.05;
+  const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
+  const bw = Math.min(24, ((W - GL - GR) / rows.length) - 2);
+  const xi = (i) => GL + (i + 0.5) * ((W - GL - GR) / rows.length);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Median pace ratio per leg, relative to each runner's overall pace" });
+
+  for (let v = Math.ceil(lo * 10) / 10; v <= hi + 1e-6; v += 0.1) {
+    const vy = y(v);
+    svg.append(s("line", { x1: GL, x2: W - GR, y1: vy, y2: vy, class: "gridline" }));
+    svg.append(s("text", { x: GL - 8, y: vy + 4, "text-anchor": "end", class: "axis-txt", text: v.toFixed(1) }));
+  }
+  svg.append(s("line", { x1: GL, x2: W - GR, y1: y(1), y2: y(1), class: "baseline" }));
+  svg.append(s("text", { x: GL + 4, y: y(1) - 6, "text-anchor": "start", class: "axis-txt", text: "1.0 = own average pace" }));
+
+  rows.forEach((r, i) => {
+    const cx = xi(i), v = r.ratio;
+    const slow = v > 1;
+    const hgt = Math.abs(y(v) - y(1));
+    if (hgt > 0.5)
+      svg.append(s("path", {
+        d: slow ? barV(cx - bw / 2, y(1) - hgt, bw, hgt, 4, true) : barV(cx - bw / 2, y(1), bw, hgt, 4, false),
+        fill: slow ? "var(--div-slow)" : "var(--div-fast)",
+      }));
+    svg.append(s("text", {
+      x: cx, y: TOP + PH + 14, class: "axis-txt", "text-anchor": "end",
+      transform: `rotate(-38 ${cx} ${TOP + PH + 14})`, text: r.name.length > 14 ? r.name.slice(0, 13) + "…" : r.name,
+    }));
+    const hit = s("rect", { x: cx - bw / 2 - 2, y: TOP, width: bw + 4, height: PH, class: "hit" });
+    hover(hit, (e) => tipShow(e, `Leg into ${r.name} (${fmt1(r.leg_mi)} mi)`, [
+      { value: "×" + fmt1(v) + (slow ? " slower" : " faster"), label: "vs own average", key: slow ? cssVar("--div-slow") : cssVar("--div-fast") },
+      { value: fmt1(r.pace) + " min/mi", label: `median leg pace (${r.n} runners)` },
+    ]));
+    svg.append(hit);
+  });
+
+  root.append(h("div", { class: "legend" },
+    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--div-slow)" }), document.createTextNode("Slower than own average")),
+    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--div-fast)" }), document.createTextNode("Faster")),
+  ));
+  root.append(svg);
+  root.append(dataTable(
+    ["Into station", "Leg miles", "Pace ratio", "Median pace (min/mi)"],
+    rows.map((r) => [r.name, fmt1(r.leg_mi), fmt1(r.ratio), fmt1(r.pace)]),
+    "Median leg pace relative to each runner's overall pace"));
+}
+
+/* ---------- chart 4: flow heatmap (sequential one-hue ramp) ---------- */
+function renderHeat(d) {
+  const root = card("card-heat", "Flow through the course",
+    "Runners arriving at each station, by hour. Darker = more arrivals.");
+  const rows = d.arrivals.map((a) => a.name);
+  const grid = d.heat.rows;
+  const GL = 190, GR = 12, W = 1040, TOP = 6, AXH = 30, CH = 20;
+  const H = TOP + rows.length * CH + AXH;
+  const cw = (W - GL - GR) / 36;
+  /* cap the ramp at the 95th percentile of non-zero cells so one mass-arrival
+     cell (the first station) doesn't flatten every other row to the palest step */
+  const nz = grid.flat().filter((n) => n > 0).sort((a, b) => a - b);
+  const cap = Math.max(1, nz[Math.min(nz.length - 1, Math.floor(nz.length * 0.95))]);
+  const capped = cap < nz[nz.length - 1];
+  const ramp = ["--heat-1", "--heat-2", "--heat-3", "--heat-4", "--heat-5", "--heat-6", "--heat-7"];
+  const bucket = (n) => (n <= 0 ? null : ramp[Math.min(6, Math.floor((n / cap) * 7))]);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Arrivals per station per hour of the race" });
+
+  for (let hr = 0; hr <= 36; hr += 3) {
+    svg.append(s("text", { x: GL + hr * cw, y: H - AXH + 18, "text-anchor": "middle", class: "axis-txt", text: fmtTod(hr) }));
+  }
+  grid.forEach((rowCounts, i) => {
+    const y0 = TOP + i * CH;
+    svg.append(s("text", { x: GL - 10, y: y0 + CH / 2 + 4, "text-anchor": "end", class: "row-txt", text: rows[i] }));
+    rowCounts.forEach((n, hr) => {
+      const v = bucket(n);
+      const cell = s("rect", {
+        x: GL + hr * cw + 1, y: y0 + 1, width: cw - 2, height: CH - 2, rx: 2,
+        fill: v ? `var(${v})` : "transparent", class: v ? "mark" : "hit",
+      });
+      hover(cell, (e) => tipShow(e, `${rows[i]} · ${fmtTod(hr)}–${fmtTod(hr + 1)}`, [
+        { value: String(n), label: n === 1 ? "runner arriving" : "runners arriving", key: v ? cssVar(v) : cssVar("--grid") },
+      ]));
+      svg.append(cell);
+    });
+  });
+
+  const scale = h("span", { class: "lscale", role: "img", "aria-label": "color scale from 1 to " + cap + (capped ? " or more" : "") + " arrivals" });
+  ramp.forEach((r) => scale.append(h("i", { style: `background:var(${r})` })));
+  root.append(h("div", { class: "legend" },
+    h("span", { text: "1" }), scale, h("span", { text: `${cap}${capped ? "+" : ""} arrivals/hour` }),
+  ));
+  root.append(svg);
+  root.append(dataTable(
+    ["Aid station", ...Array.from({ length: 36 }, (_, hr) => fmtTod(hr))],
+    grid.map((rowCounts, i) => [rows[i], ...rowCounts.map((n) => (n === 0 ? "" : n))]),
+    "Arrivals per station per hour of race time"));
+}
+
+/* ---------- chart 5: attrition (single series) ---------- */
+function renderAttrition(d) {
+  const root = card("card-attrition", "Where the field lets go",
+    "Furthest aid station reached by runners who did not finish.");
+  const rows = d.attrition.filter((r) => r.n > 0);
+  const GL = 150, GR = 44, W = 520, ROW = 26, TOP = 6, AXH = 26;
+  const H = TOP + rows.length * ROW + AXH;
+  const maxN = Math.max(1, ...rows.map((r) => r.n));
+  const maxX = Math.max(5, Math.ceil(maxN / 5) * 5);
+  const x = (v) => GL + (v / maxX) * (W - GL - GR);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Number of non-finishers whose furthest station was each aid station" });
+
+  for (let v = 0; v <= maxX; v += 5) {
+    svg.append(s("line", { x1: x(v), x2: x(v), y1: TOP, y2: H - AXH, class: "gridline" }));
+    svg.append(s("text", { x: x(v), y: H - AXH + 16, "text-anchor": "middle", class: "axis-txt", text: v }));
+  }
+  svg.append(s("line", { x1: x(0), x2: x(0), y1: TOP, y2: H - AXH, class: "baseline" }));
+
+  rows.forEach((r, i) => {
+    const y0 = TOP + i * ROW;
+    svg.append(s("text", { x: GL - 10, y: y0 + ROW / 2 + 4, "text-anchor": "end", class: "row-txt", text: r.name }));
+    svg.append(s("path", { d: barH(x(0), y0 + (ROW - 14) / 2, x(r.n) - x(0), 14, 4, 1), fill: "var(--series)" }));
+    svg.append(s("text", { x: x(r.n) + 6, y: y0 + ROW / 2 + 4, class: "val-txt", text: String(r.n) }));
+    const hit = s("rect", { x: 0, y: y0, width: W, height: ROW, class: "hit" });
+    hover(hit, (e) => tipShow(e, `${r.name} — ${fmt1(r.dist)} mi`, [
+      { value: String(r.n), label: "runners stopped here", key: cssVar("--series") },
+    ]));
+    svg.append(hit);
+  });
+  root.append(svg);
+  root.append(dataTable(
+    ["Furthest station", "Miles", "Runners"],
+    rows.map((r) => [r.name, fmt1(r.dist), r.n]),
+    "Non-finishers by furthest station reached"));
+}
+
+/* ---------- about card ---------- */
+function renderAbout(d) {
+  const root = card("card-about", "Reading this dashboard", "");
+  root.querySelector(".tbtn").style.display = "none";
+  const ul = h("ul", { style: "margin:4px 0 8px; padding-left:18px; font-size:13px; color:var(--ink-2); line-height:1.6" });
+  [
+    "Crews: use the arrival windows to plan when to be at each station — the light band covers 80% of the field.",
+    "The leg-difficulty chart shows where everyone slows down; expect to run above your average pace on red legs.",
+    "Longer stops often precede drops: compare the two bars at each station in the stop-length chart.",
+    "Race staff: the flow heatmap shows when each station is busy; the drop chart shows where sweep and transport matter most.",
+  ].forEach((t) => ul.append(h("li", { text: t })));
+  root.append(ul);
+}
+
+/* ---------- KPI row ---------- */
+function renderKpis(d) {
+  const wrap = document.getElementById("kpis");
+  wrap.replaceChildren();
+  const k = d.kpis;
+  const tiles = [
+    ["Starters", k.starters == null ? "–" : String(k.starters), ""],
+    ["Finishers", k.finishers == null ? "–" : String(k.finishers), ""],
+    ["Finish rate", k.finish_rate == null ? "–" : Math.round(k.finish_rate * 100) + "%", ""],
+    ["Median finish", k.median_finish_hrs == null ? "–" : fmt1(k.median_finish_hrs), "h"],
+    ["Median stop", k.median_stoppage_min == null ? "–" : fmt1(k.median_stoppage_min), "min"],
+  ];
+  for (const [label, value, unit] of tiles) {
+    wrap.append(h("div", { class: "tile" },
+      h("div", { class: "tlabel", text: label }),
+      h("div", { class: "tvalue", text: value }, unit ? h("span", { class: "tunit", text: unit }) : null),
+    ));
+  }
+}
+
+/* ---------- filter row ---------- */
+function renderYearPills() {
+  const wrap = document.getElementById("yearpills");
+  wrap.replaceChildren();
+  for (const y of DATA.years) {
+    wrap.append(h("button", {
+      class: "yearpill", "aria-pressed": String(String(y) === state.year), text: String(y),
+      onclick: () => { state.year = String(y); render(); },
+    }));
+  }
+}
+
+function render() {
+  const d = DATA.by_year[state.year];
+  renderYearPills();
+  renderKpis(d);
+  renderArrivals(d);
+  renderStoppage(d);
+  renderLegs(d);
+  renderHeat(d);
+  renderAttrition(d);
+  renderAbout(d);
+}
+render();
+</script>
+</body>
+</html>
