@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eastern States 100 — Aid Station Dashboard</title>
+<!-- Leaflet powers the course-map card only; every other card is self-contained.
+     If these fail to load (offline), the map degrades to a note and the rest works. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>
   .es-dash {
     color-scheme: light;
@@ -121,8 +127,8 @@
   }
   .tbtn:hover { border-color: var(--baseline); }
 
-  .card svg { width: 100%; height: auto; display: block; }
-  .card svg text { font-family: inherit; }
+  .card > svg { width: 100%; height: auto; display: block; }
+  .card > svg text { font-family: inherit; }
   .axis-txt { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
   .row-txt  { font-size: 12px; fill: var(--ink-2); }
   .val-txt  { font-size: 11.5px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
@@ -142,7 +148,7 @@
   .dtable th, .dtable td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
   .dtable th:first-child, .dtable td:first-child { text-align: left; font-variant-numeric: normal; }
   .dtable th { color: var(--ink-2); font-weight: 600; }
-  .card.show-table svg, .card.show-table .legend { display: none; }
+  .card.show-table > svg, .card.show-table .legend { display: none; }
   .card.show-table .dtable { display: table; }
 
   .tip {
@@ -158,6 +164,33 @@
   .tip .t-lab { color: var(--ink-2); }
 
   .foot { color: var(--muted); font-size: 12px; margin-top: 18px; line-height: 1.5; }
+
+  /* planner section (all-years, station + goal-time controls) */
+  .section-h { font-size: 18px; font-weight: 650; margin: 34px 0 4px; padding-top: 20px; border-top: 1px solid var(--border); }
+  .selctl, .numctl {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink); cursor: pointer;
+  }
+  .selctl:hover, .numctl:hover { border-color: var(--baseline); }
+  .numctl { width: 82px; cursor: text; }
+  .clearbtn {
+    font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: transparent; color: var(--ink-2); cursor: pointer;
+  }
+  .clearbtn:hover { border-color: var(--baseline); }
+  .note-muted { font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
+
+  /* Leaflet course map — the one card that reaches the network */
+  #es-map { height: 400px; border-radius: 8px; overflow: hidden; }
+  .leaflet-container { background: var(--page); font: inherit; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .es-dash .leaflet-tile {
+      filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9);
+    }
+  }
+  :root[data-theme="dark"] .es-dash .leaflet-tile {
+    filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.9);
+  }
 </style>
 </head>
 <body class="es-dash">
@@ -181,12 +214,33 @@
     <section class="card" id="card-about"></section>
   </div>
 
+  <h2 class="section-h">Plan your race</h2>
+  <p class="sub">All years 2016–2025 pooled. Pick an aid station to inspect it; add a goal
+    finish time to see how runners on that schedule pace this course and when they reach the station.</p>
+  <nav class="filters" aria-label="Planner controls">
+    <span class="flabel">Aid station</span>
+    <select id="stationsel" class="selctl" aria-label="Aid station"></select>
+    <span class="flabel" style="margin-left:8px">Goal finish</span>
+    <input id="finishhr" class="numctl" type="number" step="1" inputmode="numeric"
+      placeholder="hours" aria-label="Goal finish time in hours">
+    <button id="finishclear" class="clearbtn" type="button">Clear</button>
+  </nav>
+  <div class="grid">
+    <section class="card wide" id="card-planner"></section>
+    <section class="card wide" id="card-arrival-window"></section>
+    <section class="card wide" id="card-map"></section>
+  </div>
+
   <p class="foot">
     Times are clock time; the race starts 05:00, “+1” marks the second day.
-    Most 2025 check-in times are estimated from recorded departures via a
-    stoppage-time model; the “time in aid stations” chart uses only directly
-    observed check-in/out pairs. Station groups with fewer than 5 runners are
-    not shown.
+    Per-year charts cover 2021–2025; the race-planner section pools all years
+    2016–2025, finishers only for the pace-ratio chart. Historical stations are
+    matched to the 2026 course by distance from the start. Most 2025 check-in
+    times are estimated from recorded departures via a stoppage-time model; the
+    “time in aid stations” chart uses only directly observed check-in/out pairs.
+    Station or cohort groups with fewer than 5 runners are not shown. The course
+    map loads OpenStreetMap tiles over the network — every other card works
+    offline.
   </p>
 </div>
 <div class="tip" id="tip" role="status"></div>
@@ -196,7 +250,11 @@
 const DATA = /*__DATA__*/null;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const state = { year: String(DATA.years[0]) };
+const state = {
+  year: String(DATA.years[0]),
+  sid: DATA.planner.stations[0][0],  // first selectable station (AS1)
+  finishHr: null,                    // goal finish, whole hours; null = none
+};
 
 /* ---------- tiny DOM helpers (textContent only — no HTML injection) ---------- */
 function h(tag, attrs, ...children) {
@@ -279,6 +337,12 @@ const fmtTod = (hrs) => {
 const fmtMin = (m) => (m == null ? "–" : Math.round(m) + " min");
 const fmt1 = (v) => (v == null ? "–" : (Math.round(v * 10) / 10).toFixed(1));
 const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
+function quantile(arr, q) {
+  if (!arr.length) return null;
+  const a = [...arr].sort((x, y) => x - y);
+  const p = (a.length - 1) * q, b = Math.floor(p);
+  return a[b + 1] === undefined ? a[b] : a[b] + (a[b + 1] - a[b]) * (p - b);
+}
 
 /* ---------- card scaffolding with chart/table toggle ---------- */
 function card(id, title, subtitle) {
@@ -595,6 +659,257 @@ function renderYearPills() {
   }
 }
 
+/* ---------- planner: shared helpers ---------- */
+function lkey(varName, label) {
+  return h("span", { class: "lkey" },
+    h("i", { class: "lswatch", style: "background:var(" + varName + ")" }),
+    document.createTextNode(label));
+}
+const stationById = (sid) => DATA.planner.stations.find((r) => r[0] === sid);
+function syncStationSel() {
+  const sel = document.getElementById("stationsel");
+  if (sel) sel.value = String(state.sid);
+}
+
+/* ---------- planner chart A: cumulative pace vs final pace (scatter) ---------- */
+function renderPlanner() {
+  const P = DATA.planner;
+  const root = card("card-planner", "Cumulative pace vs. your final pace",
+    "Each dot is one finisher at one aid station, all years. Below 1.0 = ahead of their eventual overall pace at that point. Pick a station to highlight it; add a goal finish for that cohort's average line.");
+  const GL = 54, GR = 18, W = 1040, TOP = 14, AXH = 36, PH = 300;
+  const H = TOP + PH + AXH;
+  const XMAX = Math.ceil(DATA.course.total_mi / 10) * 10;
+  const ys = P.points.map((p) => p[1]);
+  const lo = Math.max(0.5, quantile(ys, 0.01) - 0.03);
+  const hi = Math.min(1.7, quantile(ys, 0.99) + 0.03);
+  const x = (mi) => GL + (mi / XMAX) * (W - GL - GR);
+  const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Cumulative pace divided by final pace, per aid station, all finishers" });
+
+  for (let v = Math.ceil(lo * 10) / 10; v <= hi + 1e-6; v += 0.1) {
+    const vy = y(v);
+    svg.append(s("line", { x1: GL, x2: W - GR, y1: vy, y2: vy, class: "gridline" }));
+    svg.append(s("text", { x: GL - 8, y: vy + 4, "text-anchor": "end", class: "axis-txt", text: v.toFixed(1) }));
+  }
+  svg.append(s("line", { x1: GL, x2: W - GR, y1: y(1), y2: y(1), class: "baseline" }));
+  svg.append(s("text", { x: W - GR, y: y(1) - 6, "text-anchor": "end", class: "axis-txt", text: "1.0 = final overall pace" }));
+  for (let mi = 0; mi <= XMAX; mi += 20)
+    svg.append(s("text", { x: x(mi), y: H - AXH + 18, "text-anchor": "middle", class: "axis-txt", text: mi + " mi" }));
+
+  const sel = state.sid;
+  const selPts = [], otherPts = [];
+  for (const p of P.points) (p[2] === sel ? selPts : otherPts).push(p);
+  for (const p of otherPts)
+    svg.append(s("circle", { cx: x(p[0]), cy: y(p[1]), r: 1.8, fill: "var(--deemph)", "fill-opacity": 0.5 }));
+  for (const p of selPts)
+    svg.append(s("circle", { cx: x(p[0]), cy: y(p[1]), r: 2.4, fill: "var(--series)", "fill-opacity": 0.75 }));
+
+  const haveTrend = state.finishHr != null && P.trend[String(state.finishHr)];
+  if (haveTrend) {
+    const tr = P.trend[String(state.finishHr)];
+    let dpath = "";
+    tr.forEach((t, i) => {
+      const st = stationById(t[0]);
+      if (!st) return;
+      dpath += (i === 0 ? "M" : "L") + x(st[2]) + "," + y(t[1]) + " ";
+    });
+    svg.append(s("path", { d: dpath, fill: "none", stroke: "var(--series-strong)",
+      "stroke-width": 2.5, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    tr.forEach((t) => {
+      const st = stationById(t[0]);
+      if (st) svg.append(s("circle", { cx: x(st[2]), cy: y(t[1]), r: 3, fill: "var(--series-strong)" }));
+    });
+  }
+
+  const av = P.avg[String(sel)], selSt = stationById(sel);
+  if (av && selSt) {
+    const ax = x(selSt[2]), ay = y(av[0]);
+    svg.append(s("line", { x1: ax - 14, x2: ax + 14, y1: ay, y2: ay, stroke: "var(--series-strong)", "stroke-width": 2 }));
+    svg.append(s("circle", { cx: ax, cy: ay, r: 4, fill: "var(--series-strong)", stroke: "var(--surface)", "stroke-width": 1.5 }));
+    svg.append(s("text", { x: ax, y: H - AXH + 18, "text-anchor": "middle", class: "axis-txt",
+      fill: "var(--series-strong)", text: selSt[1].length > 16 ? selSt[1].slice(0, 15) + "…" : selSt[1] }));
+  }
+
+  const sts = P.stations;
+  sts.forEach((st, i) => {
+    const loB = i === 0 ? 0 : (sts[i - 1][2] + st[2]) / 2;
+    const hiB = i === sts.length - 1 ? XMAX : (st[2] + sts[i + 1][2]) / 2;
+    const hit = s("rect", { x: x(loB), y: TOP, width: Math.max(1, x(hiB) - x(loB)), height: PH, class: "hit" });
+    const av2 = P.avg[String(st[0])];
+    const rows = [];
+    if (av2) rows.push({ value: "×" + av2[0].toFixed(3), label: `average of ${av2[1]} finishers`, key: cssVar("--series-strong") });
+    if (haveTrend) {
+      const c = P.trend[String(state.finishHr)].find((t) => t[0] === st[0]);
+      if (c) rows.push({ value: "×" + c[1].toFixed(3), label: `${state.finishHr} h goal cohort (${c[2]})`, key: cssVar("--series") });
+    }
+    hover(hit, (e) => tipShow(e, `${st[1]} · ${st[2]} mi`, rows.length ? rows : [{ value: "–", label: "no data" }]));
+    hit.addEventListener("click", () => { state.sid = st[0]; syncStationSel(); renderPlanner(); renderArrivalWindow(); updateMap(); });
+    svg.append(hit);
+  });
+
+  const legend = h("div", { class: "legend" },
+    lkey("--series", "Selected station"),
+    lkey("--deemph", "All other stations"),
+    lkey("--series-strong", "Station average"));
+  if (haveTrend) legend.append(lkey("--series-strong", `${state.finishHr} h goal trend`));
+  root.append(legend);
+  root.append(svg);
+  root.append(dataTable(
+    ["Aid station", "Miles", "Avg cum ÷ final", "Finishers", state.finishHr != null ? `${state.finishHr} h cohort` : "Goal cohort"],
+    sts.map((st) => {
+      const a = P.avg[String(st[0])];
+      const c = haveTrend ? P.trend[String(state.finishHr)].find((t) => t[0] === st[0]) : null;
+      return [st[1], st[2], a ? a[0].toFixed(3) : null, a ? a[1] : null, c ? c[1].toFixed(3) : null];
+    }),
+    "Cumulative-pace ratio by aid station, all finishers"));
+}
+
+/* ---------- planner chart B: arrival-time distribution ---------- */
+function renderArrivalWindow() {
+  const P = DATA.planner;
+  const sid = state.sid, st = stationById(sid);
+  const root = card("card-arrival-window", "Arrival times at " + (st ? st[1] : ""),
+    "Every recorded arrival at this station, all years (finishers and non-finishers), in half-hour bins. Add a goal finish to shade that cohort's middle 50%.");
+  const bins = P.arrivals.bins[String(sid)] || [];
+  const GL = 46, GR = 16, W = 1040, TOP = 16, AXH = 30, PH = 220;
+  const H = TOP + PH + AXH;
+  let firstNz = bins.length, lastNz = 0;
+  bins.forEach((n, b) => { if (n > 0) { if (b < firstNz) firstNz = b; lastNz = b; } });
+  if (firstNz > lastNz) { firstNz = 0; lastNz = 71; }  // empty station guard
+  const minHr = Math.max(0, Math.floor(firstNz / 2 / 4) * 4);
+  const maxHr = Math.min(36, Math.max(minHr + 4, Math.ceil((lastNz + 1) / 2 / 4) * 4));
+  const yMax = Math.max(5, Math.ceil(Math.max(1, ...bins) / 5) * 5);
+  const x = (hr) => GL + ((hr - minHr) / (maxHr - minHr)) * (W - GL - GR);
+  const y = (n) => TOP + (1 - n / yMax) * PH;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Distribution of arrival times at " + (st ? st[1] : "the selected station") });
+
+  const ystep = yMax <= 20 ? 5 : (yMax <= 50 ? 10 : 20);
+  for (let v = 0; v <= yMax; v += ystep) {
+    svg.append(s("line", { x1: GL, x2: W - GR, y1: y(v), y2: y(v), class: "gridline" }));
+    svg.append(s("text", { x: GL - 8, y: y(v) + 4, "text-anchor": "end", class: "axis-txt", text: String(v) }));
+  }
+  for (let hr = minHr; hr <= maxHr; hr += 4)
+    svg.append(s("text", { x: x(hr), y: H - AXH + 18, "text-anchor": "middle", class: "axis-txt", text: fmtTod(hr) }));
+
+  const cohort = (P.arrivals.cohort[String(sid)] || {})[String(state.finishHr)];
+  if (state.finishHr != null && cohort) {
+    const [p25, p50, p75] = cohort;
+    svg.append(s("rect", { x: x(p25), y: TOP, width: Math.max(1, x(p75) - x(p25)), height: PH,
+      fill: "var(--band-inner)", "fill-opacity": 0.35 }));
+  }
+
+  let d = `M${x(minHr)},${y(0)} `;
+  for (let b = minHr * 2; b < maxHr * 2; b++) {
+    const n = bins[b] || 0;
+    d += `L${x(b / 2)},${y(n)} L${x((b + 1) / 2)},${y(n)} `;
+  }
+  d += `L${x(maxHr)},${y(0)} Z`;
+  svg.append(s("path", { d, fill: "var(--band-inner)", "fill-opacity": 0.5,
+    stroke: "var(--series)", "stroke-width": 1.5, "stroke-linejoin": "round" }));
+  svg.append(s("line", { x1: GL, x2: W - GR, y1: y(0), y2: y(0), class: "baseline" }));
+
+  if (state.finishHr != null && cohort) {
+    const [p25, p50, p75] = cohort;
+    svg.append(s("line", { x1: x(p50), x2: x(p50), y1: TOP, y2: TOP + PH, stroke: "var(--series-strong)", "stroke-width": 2 }));
+    svg.append(s("text", { x: x(p50), y: TOP - 3, "text-anchor": "middle", class: "val-txt",
+      fill: "var(--series-strong)", text: fmtTod(p50) }));
+  }
+
+  for (let b = minHr * 2; b < maxHr * 2; b++) {
+    const n = bins[b] || 0;
+    if (!n) continue;
+    const hit = s("rect", { x: x(b / 2), y: TOP, width: Math.max(1, x((b + 1) / 2) - x(b / 2)), height: PH, class: "hit" });
+    hover(hit, (e) => tipShow(e, `${fmtTod(b / 2)} – ${fmtTod((b + 1) / 2)}`,
+      [{ value: String(n), label: n === 1 ? "runner arriving" : "runners arriving", key: cssVar("--series") }]));
+    svg.append(hit);
+  }
+
+  if (state.finishHr != null && cohort)
+    root.append(h("div", { class: "legend" },
+      lkey("--band-inner", `${state.finishHr} h finishers, middle 50%`),
+      lkey("--series-strong", "their median arrival")));
+  root.append(svg);
+  if (state.finishHr != null && !cohort)
+    root.append(h("p", { class: "note-muted",
+      text: `No goal-cohort band — fewer than 5 finishers in the ${state.finishHr} h block reached this station.` }));
+
+  const tbl = [];
+  for (let b = minHr * 2; b < maxHr * 2; b++)
+    if (bins[b]) tbl.push([`${fmtTod(b / 2)} – ${fmtTod((b + 1) / 2)}`, bins[b]]);
+  root.append(dataTable(["Arrival window", "Runners"], tbl, "Arrivals by half-hour at " + (st ? st[1] : "")));
+}
+
+/* ---------- planner chart C: Leaflet course map (network tiles) ---------- */
+let map = null, highlightLine = null;
+function initMap() {
+  const root = document.getElementById("card-map");
+  root.replaceChildren(h("div", { class: "chead" },
+    h("div", {}, h("h2", { text: "Course map — 2026" }),
+      h("p", { class: "csub", text: "The highlighted section is the leg into the selected aid station." }))));
+  const mapDiv = h("div", { id: "es-map" });
+  root.append(mapDiv);
+  if (!window.L) {
+    root.append(h("p", { class: "note-muted",
+      text: "Map tiles could not be loaded (offline). Every other card works without a network connection." }));
+    return;
+  }
+  const C = DATA.course;
+  map = L.map(mapDiv, { scrollWheelZoom: false }).fitBounds(C.route);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17, attribution: "© OpenStreetMap contributors",
+  }).addTo(map);
+  L.polyline(C.route, { color: cssVar("--series"), weight: 3, opacity: 0.85 }).addTo(map);
+  C.stations.forEach((st) => {
+    const [id, name, lat, lon, mi] = st;
+    const mk = L.circleMarker([lat, lon], {
+      radius: 5, color: cssVar("--series-strong"), weight: 2,
+      fillColor: cssVar("--surface"), fillOpacity: 1,
+    });
+    mk.bindTooltip(`${name} · ${mi} mi`);
+    if (id > 0) mk.on("click", () => {
+      state.sid = id; syncStationSel(); renderPlanner(); renderArrivalWindow(); updateMap();
+    });
+    mk.addTo(map);
+  });
+  updateMap();
+}
+function updateMap() {
+  if (!map) return;
+  const C = DATA.course;
+  const cur = C.stations.find((r) => r[0] === state.sid);
+  const prev = C.stations.find((r) => r[0] === state.sid - 1);
+  if (!cur) return;
+  const startIdx = prev ? prev[5] : 0;
+  const slice = C.route.slice(startIdx, cur[5] + 1);
+  if (highlightLine) highlightLine.remove();
+  highlightLine = L.polyline(slice, { color: cssVar("--series-strong"), weight: 5, opacity: 1 }).addTo(map);
+}
+
+/* ---------- planner controls ---------- */
+function initPlannerControls() {
+  const sel = document.getElementById("stationsel");
+  for (const [id, name, mi] of DATA.planner.stations)
+    sel.append(h("option", { value: String(id), text: `${name} — ${mi} mi` }));
+  sel.value = String(state.sid);
+  sel.addEventListener("change", () => {
+    state.sid = Number(sel.value);
+    renderPlanner(); renderArrivalWindow(); updateMap();
+  });
+  const fin = document.getElementById("finishhr");
+  fin.min = String(DATA.planner.fhr_min);
+  fin.max = String(DATA.planner.fhr_max);
+  fin.addEventListener("input", () => {
+    const v = fin.value === "" ? null : Math.round(Number(fin.value));
+    state.finishHr = v == null || Number.isNaN(v) ? null : v;
+    renderPlanner(); renderArrivalWindow();
+  });
+  document.getElementById("finishclear").addEventListener("click", () => {
+    fin.value = ""; state.finishHr = null; renderPlanner(); renderArrivalWindow();
+  });
+}
+
 function render() {
   const d = DATA.by_year[state.year];
   renderYearPills();
@@ -605,8 +920,13 @@ function render() {
   renderHeat(d);
   renderAttrition(d);
   renderAbout(d);
+  renderPlanner();
+  renderArrivalWindow();
+  updateMap();
 }
 render();
+initPlannerControls();
+initMap();
 </script>
 </body>
 </html>
