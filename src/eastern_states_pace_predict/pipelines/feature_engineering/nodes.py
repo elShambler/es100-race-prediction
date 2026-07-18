@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 FINISH_DIST_MI = 103.1
 # Rows at/after this distance are the finish — there is no departure there.
 FINISH_CUTOFF_MI = 103.0
+MINUTES_PER_HOUR = 60
 
 
 def _stoppage_features(splits: pl.DataFrame) -> pl.DataFrame:
@@ -362,4 +363,81 @@ def compute_interval_features(imputed: pl.DataFrame) -> pl.DataFrame:
             "FinishRank",
             "OverallRank",
         ]
+    )
+
+
+def compute_cumulative_ratio(
+    splits: pl.DataFrame, asinfo: pl.DataFrame, xwalk: pl.DataFrame
+) -> pl.DataFrame:
+    """Cumulative pace ÷ final pace per finisher × aid station, all years.
+
+    A ratio below 1.0 means the runner reached that station faster than their
+    eventual overall pace (banking time); the ratio converges to 1.0 at the
+    finish by construction. Finishers only — DNFs have no final pace.
+
+    Inputs: es_splits_all, es_asinfo_historical, es_station_xwalk
+    Outputs: es_cumulative_ratio
+    """
+    # Per-year finish distance from the flag_finish rows (102.9 mi in 2016-17,
+    # 103.1 mi later); flag may load as Boolean or "TRUE"/"FALSE" strings.
+    finish_dist = (
+        asinfo.filter(pl.col("year").is_not_null())
+        .filter(pl.col("flag_finish").cast(pl.Utf8).str.to_uppercase() == "TRUE")
+        .select("year", pl.col("dist_from_start").alias("finish_dist_mi"))
+    )
+
+    return (
+        splits.filter(
+            (pl.col("FinishRank") != "DNF")
+            & pl.col("finish_elapsed_mins").is_not_null()
+            & pl.col("as_check_in__elapsed__min").is_not_null()
+            & (pl.col("as_dist_from_start") > 0)
+        )
+        .join(finish_dist, on="year", how="left")
+        .with_columns(
+            # `as_check_in__elapsed__min` stores decimal HOURS (see CLAUDE.md);
+            # the ×60 converts to minutes for min/mile pace.
+            (
+                pl.col("as_check_in__elapsed__min")
+                * MINUTES_PER_HOUR
+                / pl.col("as_dist_from_start")
+            ).alias("cum_pace_min_per_mi"),
+            (pl.col("finish_elapsed_mins") / pl.col("finish_dist_mi")).alias(
+                "final_pace_min_per_mi"
+            ),
+            pl.col("as_check_in__elapsed__min").alias("elapsed_hrs"),
+            # Block h covers [h - 0.5, h + 0.5): a 27.9 h finisher is "28 h".
+            (pl.col("finish_elapsed_hrs") + 0.5)
+            .floor()
+            .cast(pl.Int64)
+            .alias("finish_hr_block"),
+        )
+        .with_columns(
+            (pl.col("cum_pace_min_per_mi") / pl.col("final_pace_min_per_mi")).alias(
+                "cum_ratio"
+            )
+        )
+        .join(
+            xwalk.select("year", "as_index", "station_2026", "station_mi_2026"),
+            on=["year", "as_index"],
+            how="left",
+        )
+        .select(
+            [
+                "year",
+                "bib",
+                "as_index",
+                "as_name",
+                "as_dist_from_start",
+                "elapsed_hrs",
+                "cum_pace_min_per_mi",
+                "final_pace_min_per_mi",
+                "cum_ratio",
+                "finish_elapsed_hrs",
+                "finish_hr_block",
+                "station_2026",
+                "station_mi_2026",
+            ]
+        )
+        .sort(["year", "bib", "as_dist_from_start"])
     )
