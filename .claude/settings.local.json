@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(uv run kedro run:*)"
+      "Bash(uv run kedro run:*)",
+      "Bash(uv run *)"
     ]
   }
 }
