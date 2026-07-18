@@ -141,6 +141,14 @@ es_splits_2021_2025_imputed:
     kedro-viz:
       layer: feature
 
+# Aid-station dashboard: self-contained HTML page for the race website
+es_as_dashboard:
+  type: text.TextDataset
+  filepath: data/08_reporting/es_as_dashboard.html
+  metadata:
+    kedro-viz:
+      layer: reporting
+
 # Per runner × aid-station interval features: interval pace, overall pace, pace ratio
 es_interval_features:
   type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
