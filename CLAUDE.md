@@ -14,15 +14,18 @@ Years not run: 2018, 2020, 2024.
 # Install dependencies
 uv sync
 
-# Run everything (data_processing then feature_engineering)
+# Run everything (data_processing → feature_engineering → reporting)
 uv run kedro run
 
 # Run a single pipeline
 uv run kedro run --pipeline data_processing
 uv run kedro run --pipeline feature_engineering
+uv run kedro run --pipeline reporting
 
-# Data-quality regression tests (read pipeline outputs — run the pipeline first)
-uv run pytest tests/test_data_quality.py
+# Data-quality regression tests (read pipeline outputs — run the pipeline first).
+# Test deps live in the `dev` extra: `uv sync --extra dev` once, or `uv run pytest`
+# silently falls back to a system pytest without the project installed.
+uv run pytest tests/
 
 # Run specific nodes by name
 uv run kedro run --nodes wide_to_long__es_splits_2021_2025
@@ -118,6 +121,20 @@ impute__missing_times    # fills missing check-in/check-out elapsed hours
 features__interval_pace  # interval pace, overall pace, pace ratio per runner×AS
     → es_interval_features (04_feature)
 ```
+
+### Reporting Pipeline (`pipelines/reporting/`)
+
+`build__as_dashboard` aggregates `es_interval_features` per year (KPIs, arrival
+windows, observed stoppage by cohort, leg pace ratios, hourly flow, DNF drop
+points) and injects the JSON into `template.html` (sits next to `nodes.py`) →
+`es_as_dashboard` = `data/08_reporting/es_as_dashboard.html`, a fully
+self-contained page (inline CSS/JS, no external deps) intended to be dropped
+onto the race website. Design notes: charts are hand-built SVG following the
+dataviz skill (validated palette, light+dark via CSS custom properties, per-mark
+tooltips, table-view toggle per card). Stoppage medians are suppressed where
+observed check-in/out pairs cover <30% of a station's visits (2025's sparse
+check-ins leave a biased subset); the flow heatmap color scale caps at the 95th
+percentile of non-zero cells.
 
 - Stoppage target/predictions are in **minutes**; elapsed columns remain decimal hours.
 - Trains on rows with both times observed (~7k, mostly 2021-2023), validated by year-holdout (params in `conf/base/parameters_feature_engineering.yml`).
