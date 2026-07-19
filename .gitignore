@@ -22,6 +22,9 @@ data/**
 !data/01_raw/ES100_2021_allSplits.csv
 !data/01_raw/*
 
+# Keep the report graphics
+!data/08_reporting/*
+
 # ignore kedro-viz metadata
 .viz
 
