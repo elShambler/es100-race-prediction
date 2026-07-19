@@ -40,6 +40,27 @@ def _quantiles(s: pl.Series, qs: tuple[float, ...]) -> list[float | None]:
     return [round(s.quantile(q, interpolation="linear"), 3) for q in qs]
 
 
+def _speed_ratio_expr(pace_ratio_col: str) -> pl.Expr:
+    """Leg speed relative to the runner's final overall pace.
+
+    Inverts a pace ratio (leg pace ÷ final overall pace) into a speed ratio
+    (final overall pace ÷ leg pace), so >1.0 means that leg ran *faster* than
+    the runner's whole-race average and <1.0 means slower. Inverting per-row
+    before aggregating is required — median(1/x) ≠ 1/median(x). Non-positive
+    pace ratios yield null.
+    """
+    return (
+        pl.when(pl.col(pace_ratio_col) > 0)
+        .then(1.0 / pl.col(pace_ratio_col))
+        .otherwise(None)
+    )
+
+
+def _leg_mph_expr(pace_col: str) -> pl.Expr:
+    """Absolute moving speed (mph) from a leg pace in minutes per mile."""
+    return pl.when(pl.col(pace_col) > 0).then(60.0 / pl.col(pace_col)).otherwise(None)
+
+
 def _year_payload(df: pl.DataFrame) -> dict:
     """All chart aggregates for one year's interval features."""
     runners = df.unique(subset=["bib"])
@@ -117,8 +138,13 @@ def _year_payload(df: pl.DataFrame) -> dict:
             }
         )
 
-        clean = sdf.filter(~pl.col("spans_missing_as"))
-        ratio = _quantiles(clean["as_interval_pace_ratio"], (0.5,))[0]
+        # Absolute leg speed (mph): median moving speed on the leg into this
+        # station. The per-year card shows this against the year's median leg
+        # speed line (the planner card keeps the mph *ratio* instead).
+        clean = sdf.filter(~pl.col("spans_missing_as")).with_columns(
+            _leg_mph_expr("as_interval_pace").alias("_leg_mph")
+        )
+        mph = _quantiles(clean["_leg_mph"], (0.5,))[0]
         pace = _quantiles(clean["as_interval_pace"], (0.5,))[0]
         legs.append(
             {
@@ -128,9 +154,9 @@ def _year_payload(df: pl.DataFrame) -> dict:
                 "leg_mi": round(clean["interval_dist_mi"].drop_nulls().median() or 0, 1)
                 if clean.height
                 else None,
-                "ratio": ratio,
+                "mph": mph,
                 "pace": pace,
-                "n": clean["as_interval_pace_ratio"].drop_nulls().len(),
+                "n": clean["_leg_mph"].drop_nulls().len(),
             }
         )
 
@@ -156,6 +182,13 @@ def _year_payload(df: pl.DataFrame) -> dict:
 
     med_stop = df.filter(~pl.col("stoppage_imputed"))["as_stoppage_time_min"]
 
+    # Year's median leg speed (mph) — the reference line on the leg-speed card,
+    # over every clean moving leg (not the per-station medians).
+    year_legs = df.filter(~pl.col("spans_missing_as")).with_columns(
+        _leg_mph_expr("as_interval_pace").alias("_leg_mph")
+    )
+    median_leg_speed = _quantiles(year_legs["_leg_mph"], (0.5,))[0]
+
     return {
         "kpis": {
             "starters": n_start,
@@ -172,6 +205,7 @@ def _year_payload(df: pl.DataFrame) -> dict:
         "arrivals": arrivals,
         "stoppage": stoppage,
         "legs": legs,
+        "median_leg_speed": median_leg_speed,
         "attrition": attrition,
         "heat": {"hours": list(range(36)), "rows": heat_rows},
     }
@@ -196,6 +230,11 @@ def _planner_payload(
     fhr_min = params["finish_hr_min"]
     fhr_max = params["finish_hr_max"]
 
+    # Speed ratio (final pace ÷ leg pace): >1.0 = leg faster than the runner's
+    # overall average. Inverted per-row here so all downstream means/samples are
+    # computed on the speed metric (median/mean of 1/x ≠ 1/median of x).
+    ratio = ratio.with_columns(_speed_ratio_expr("interval_ratio").alias("_speed"))
+
     # Selectable stations = the 2026 aid stations, Start excluded (nothing runs
     # into it). [id, name, scaled mile].
     selectable = stations.filter(pl.col("station_id") > 0).sort("station_id")
@@ -206,7 +245,9 @@ def _planner_payload(
 
     # Scatter points: one per finisher × station, mapped to a 2026 station.
     # Stratified-sample down to max_scatter_points, keeping cohorts balanced.
-    pts_df = ratio.filter(pl.col("station_2026").is_not_null())
+    pts_df = ratio.filter(
+        pl.col("station_2026").is_not_null() & pl.col("_speed").is_not_null()
+    )
     cap = params["max_scatter_points"]
     if pts_df.height > cap:
         frac = cap / pts_df.height
@@ -221,24 +262,25 @@ def _planner_payload(
     points = [
         [
             round(r["as_dist_from_start"], 2),
-            round(r["interval_ratio"], 3),
+            round(r["_speed"], 3),
             int(r["station_2026"]),
             int(r["finish_hr_block"]),
         ]
         for r in pts_df.iter_rows(named=True)
     ]
 
-    # Per-station average ratio (full data, not the sample): {sid: [mean, n]}.
+    # Per-station average speed ratio (full data, not the sample):
+    # {sid: [mean, n]}.
     avg = {}
     avg_df = (
         ratio.filter(pl.col("station_2026").is_not_null())
         .group_by("station_2026")
-        .agg(pl.col("interval_ratio").mean().alias("m"), pl.len().alias("n"))
+        .agg(pl.col("_speed").mean().alias("m"), pl.len().alias("n"))
     )
     for r in avg_df.iter_rows(named=True):
         avg[str(int(r["station_2026"]))] = [round(r["m"], 3), int(r["n"])]
 
-    # Cohort trend: mean ratio per (finish-hour block, station); cells with
+    # Cohort trend: mean speed ratio per (finish-hour block, station); cells with
     # fewer than MIN_GROUP_N runners are dropped so a lone runner can't define a
     # "trend". {fhr: [[sid, mean, n], ...]}.
     trend = {}
@@ -249,7 +291,7 @@ def _planner_payload(
             & (pl.col("finish_hr_block") <= fhr_max)
         )
         .group_by("finish_hr_block", "station_2026", "station_mi_2026")
-        .agg(pl.col("interval_ratio").mean().alias("m"), pl.len().alias("n"))
+        .agg(pl.col("_speed").mean().alias("m"), pl.len().alias("n"))
         .filter(pl.col("n") >= MIN_GROUP_N)
         .sort("station_mi_2026")
     )
@@ -428,12 +470,12 @@ COHORTS = [
 def plot_blog_interval_ratio(ratio: pl.DataFrame) -> dict:
     """Blog-ready scatter: per-leg pace vs final overall pace over the course.
 
-    One point per finisher × aid station, all years. Each point is the moving
-    pace on the leg *into* that station divided by the runner's final overall
-    pace: below 1.0 = that leg ran faster than their whole-race average, above
-    1.0 = a slower/harder leg. Per-cohort median lines use the 2026 station mile
-    marks so all years share an x position and trace the course's difficulty
-    profile.
+    One point per finisher × aid station, all years. Each point is the runner's
+    final overall pace divided by the moving pace on the leg *into* that station
+    (a speed ratio): above 1.0 = that leg ran faster than their whole-race
+    average, below 1.0 = a slower/harder leg. Per-cohort median lines use the
+    2026 station mile marks so all years share an x position and trace the
+    course's difficulty profile.
 
     Inputs: es_interval_ratio
     Outputs: es_blog_figures (PNG), es_blog_figures_svg (SVG)
@@ -441,13 +483,16 @@ def plot_blog_interval_ratio(ratio: pl.DataFrame) -> dict:
     mpl_theme.apply()
     fig, ax = plt.subplots(figsize=(12, 7))
 
+    # Speed ratio (final pace ÷ leg pace), inverted per-row before aggregating.
+    ratio = ratio.with_columns(_speed_ratio_expr("interval_ratio").alias("_speed"))
+
     for label, lo, hi, color in COHORTS:
         cohort = ratio.filter(
             (pl.col("finish_elapsed_hrs") >= lo) & (pl.col("finish_elapsed_hrs") < hi)
         )
         ax.scatter(
             cohort["as_dist_from_start"],
-            cohort["interval_ratio"],
+            cohort["_speed"],
             s=7,
             color=color,
             alpha=0.22,
@@ -457,7 +502,7 @@ def plot_blog_interval_ratio(ratio: pl.DataFrame) -> dict:
         medians = (
             cohort.filter(pl.col("station_2026").is_not_null())
             .group_by("station_2026", "station_mi_2026")
-            .agg(pl.col("interval_ratio").median().alias("med"), pl.len().alias("n"))
+            .agg(pl.col("_speed").median().alias("med"), pl.len().alias("n"))
             .filter(pl.col("n") >= MIN_GROUP_N)
             .sort("station_mi_2026")
         )
@@ -482,17 +527,17 @@ def plot_blog_interval_ratio(ratio: pl.DataFrame) -> dict:
         va="bottom",
     )
 
-    lo_y = max(0.4, ratio["interval_ratio"].quantile(0.01) - 0.03)
-    hi_y = min(2.4, ratio["interval_ratio"].quantile(0.99) + 0.03)
+    lo_y = max(0.4, ratio["_speed"].quantile(0.01) - 0.03)
+    hi_y = min(2.4, ratio["_speed"].quantile(0.99) + 0.03)
     ax.set_xlim(0, 106)
     ax.set_ylim(lo_y, hi_y)
     ax.legend(title=None, loc="upper left", markerscale=1.5)
     mpl_theme.set_title(
         ax,
         "Which legs make you pay",
-        "Leg pace relative to final overall pace — finishers, 2016–2025",
+        "Leg speed relative to final overall pace — finishers, 2016–2025",
     )
-    mpl_theme.set_labels(ax, "Distance from start [mi]", "Leg ÷ final pace")
+    mpl_theme.set_labels(ax, "Distance from start [mi]", "Speed relative to final")
 
     return (
         {"interval_ratio_scatter.png": fig},

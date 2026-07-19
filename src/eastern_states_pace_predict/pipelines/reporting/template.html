@@ -4,12 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Eastern States 100 — Aid Station Dashboard</title>
-<!-- Leaflet powers the course-map card only; every other card is self-contained.
-     If these fail to load (offline), the map degrades to a note and the rest works. -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<!-- Fully self-contained: no external scripts, styles, fonts, or map tiles.
+     The whole dashboard works offline (e.g. from a phone at the race). -->
 <style>
   @font-face {
     font-family: "Geist Mono";
@@ -154,9 +150,21 @@
   .clearbtn:hover { border-color: var(--baseline); }
   .note-muted { font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
 
-  /* Leaflet course map — the one card that reaches the network */
-  #es-map { height: 400px; border-radius: 8px; overflow: hidden; }
-  .leaflet-container { background: var(--page); font: inherit; }
+  /* Self-contained SVG course map (no tiles / no network) */
+  .mapdot { cursor: pointer; }
+  .mapdot:focus-visible { outline: 2px solid var(--series-strong); outline-offset: 1px; }
+  .map-lbl { fill: var(--series-strong); font-size: 12px; font-weight: 600; }
+
+  /* Race-day pacing planner table */
+  .pace-tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  .pace-tbl th, .pace-tbl td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .pace-tbl th:first-child, .pace-tbl td:first-child { text-align: left; }
+  .pace-tbl thead th { color: var(--ink-2); font-weight: 700; }
+  .pace-tbl tbody tr.reached { background: var(--band-outer); }
+  .pace-tbl input.actin { width: 74px; font: inherit; padding: 2px 4px; text-align: right;
+    border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--ink); }
+  .pace-finish { font-size: 15px; margin: 10px 0 2px; }
+  .pace-finish b { font-size: 20px; color: var(--series-strong); }
 </style>
 </head>
 <body class="es-dash">
@@ -197,6 +205,21 @@
     <section class="card wide" id="card-map"></section>
   </div>
 
+  <h2 class="section-h">Race-day pacing plan</h2>
+  <p class="sub">A pacing tool for crew — works fully offline. Enter your runner's goal finish
+    time to get a predicted arrival at every aid station with a typical range. As the race
+    unfolds, type in their actual arrival times; the plan re-projects the finish and the
+    remaining stations from the pace they're actually holding.</p>
+  <nav class="filters" aria-label="Pacing controls">
+    <span class="flabel">Goal finish</span>
+    <input id="paceGoal" class="numctl" type="number" step="0.5" inputmode="decimal"
+      placeholder="hours" aria-label="Goal finish time in hours">
+    <button id="paceReset" class="clearbtn" type="button">Reset actuals</button>
+  </nav>
+  <div class="grid">
+    <section class="card wide" id="card-pacing"></section>
+  </div>
+
   <p class="foot">
     Times are clock time; the race starts 05:00, “+1” marks the second day.
     Per-year charts cover 2021–2025; the race-planner section pools all years
@@ -204,10 +227,10 @@
     matched to the 2026 course by distance from the start. Most 2025 check-in
     times are estimated from recorded departures via a stoppage-time model; the
     “time in aid stations” chart uses only directly observed check-in/out pairs.
-    Station or cohort groups with fewer than 5 runners are not shown. The course
-    map loads OpenStreetMap tiles over the network — every other card works
-    offline.
-  </p>
+    Station or cohort groups with fewer than 5 runners are not shown. The whole
+    dashboard — including the course map and pacing planner — is self-contained
+    and works with no network connection.
+</p>
 </div>
 <div class="tip" id="tip" role="status"></div>
 
@@ -220,6 +243,7 @@ const state = {
   year: String(DATA.years[0]),
   sid: DATA.planner.stations[0][0],  // first selectable station (AS1)
   finishHr: null,                    // goal finish, whole hours; null = none
+  pace: { goal: null, actuals: {} }, // race-day planner: goal hrs + {sid: rawInput}
 };
 
 /* ---------- tiny DOM helpers (textContent only — no HTML injection) ---------- */
@@ -437,38 +461,44 @@ function renderStoppage(d) {
     "Median observed stop length in minutes"));
 }
 
-/* ---------- chart 3: leg difficulty (deviation from own pace at baseline) ---------- */
+/* ---------- chart 3: leg speed in mph, vs the year's median leg speed ---------- */
 function renderLegs(d) {
-  const root = card("card-legs", "Leg difficulty, relative to your own pace",
-    "Median pace on the leg into each station vs the runner's whole-race average. Bars above the line = a slower, harder leg; below = faster.");
-  const rows = d.legs.filter((r) => r.ratio != null);
-  const GL = 46, GR = 10, W = 520, TOP = 10, AXH = 44, PH = 240;
+  const root = card("card-legs", "Leg speed",
+    "Median moving speed on the leg into each station, in miles per hour. The line marks this year's median leg speed; bars above ran faster than typical, below slower.");
+  const rows = d.legs.filter((r) => r.mph != null);
+  const med = d.median_leg_speed;
+  // AXH holds the rotated station labels below the plot; keep it tall enough
+  // that the longest angled name stays inside the viewBox.
+  const GL = 46, GR = 10, W = 520, TOP = 10, AXH = 72, PH = 240;
   const H = TOP + PH + AXH;
-  const lo = Math.min(0.8, ...rows.map((r) => r.ratio)) - 0.05;
-  const hi = Math.max(1.2, ...rows.map((r) => r.ratio)) + 0.05;
+  const vals = rows.map((r) => r.mph).concat(med != null ? [med] : []);
+  const lo = Math.floor((Math.min(...vals) - 0.4) * 2) / 2;
+  const hi = Math.ceil((Math.max(...vals) + 0.4) * 2) / 2;
   const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
   const bw = Math.min(24, ((W - GL - GR) / rows.length) - 2);
   const xi = (i) => GL + (i + 0.5) * ((W - GL - GR) / rows.length);
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
-    "aria-label": "Median pace ratio per leg, relative to each runner's overall pace" });
+    "aria-label": "Median leg speed per station in miles per hour" });
 
-  for (let v = Math.ceil(lo * 10) / 10; v <= hi + 1e-6; v += 0.1) {
+  const step = hi - lo <= 3 ? 0.5 : 1;
+  for (let v = lo; v <= hi + 1e-6; v += step) {
     const vy = y(v);
     svg.append(s("line", { x1: GL, x2: W - GR, y1: vy, y2: vy, class: "gridline" }));
     svg.append(s("text", { x: GL - 8, y: vy + 4, "text-anchor": "end", class: "axis-txt", text: v.toFixed(1) }));
   }
-  svg.append(s("line", { x1: GL, x2: W - GR, y1: y(1), y2: y(1), class: "baseline" }));
-  svg.append(s("text", { x: GL + 4, y: y(1) - 6, "text-anchor": "start", class: "axis-txt", text: "1.0 = own average pace" }));
+  const baseY = med != null ? y(med) : y(lo);
+  if (med != null)
+    svg.append(s("line", { x1: GL, x2: W - GR, y1: baseY, y2: baseY, class: "baseline" }));
 
   rows.forEach((r, i) => {
-    const cx = xi(i), v = r.ratio;
-    const slow = v > 1;
-    const hgt = Math.abs(y(v) - y(1));
+    const cx = xi(i), v = r.mph;
+    const fast = med != null && v >= med;
+    const hgt = Math.abs(y(v) - baseY);
     if (hgt > 0.5)
       svg.append(s("path", {
-        d: slow ? barV(cx - bw / 2, y(1) - hgt, bw, hgt, 4, true) : barV(cx - bw / 2, y(1), bw, hgt, 4, false),
+        d: fast ? barV(cx - bw / 2, y(v), bw, hgt, 4, true) : barV(cx - bw / 2, baseY, bw, hgt, 4, false),
         fill: "var(--series)",
-        "fill-opacity": slow ? 1 : 0.55,
+        "fill-opacity": fast ? 1 : 0.55,
       }));
     svg.append(s("text", {
       x: cx, y: TOP + PH + 14, class: "axis-txt", "text-anchor": "end",
@@ -476,21 +506,27 @@ function renderLegs(d) {
     }));
     const hit = s("rect", { x: cx - bw / 2 - 2, y: TOP, width: bw + 4, height: PH, class: "hit" });
     hover(hit, (e) => tipShow(e, `Leg into ${r.name} (${fmt1(r.leg_mi)} mi)`, [
-      { value: "×" + fmt1(v) + (slow ? " slower" : " faster"), label: "vs own average", key: cssVar("--series") },
+      { value: fmt1(v) + " mph", label: med != null ? (fast ? "faster than median" : "slower than median") : "median leg speed", key: cssVar("--series") },
       { value: fmt1(r.pace) + " min/mi", label: `median leg pace (${r.n} runners)` },
     ]));
     svg.append(hit);
   });
 
+  // Median-line label last, so it sits on top of the bars (was hidden behind
+  // the tall early-leg bars when drawn with the line).
+  if (med != null)
+    svg.append(s("text", { x: W - GR, y: baseY - 6, "text-anchor": "end", class: "val-txt",
+      fill: "var(--baseline)", text: fmt1(med) + " mph median" }));
+
   root.append(h("div", { class: "legend" },
-    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--series)" }), document.createTextNode("Slower than own average (above)")),
-    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--series);opacity:0.55" }), document.createTextNode("Faster (below)")),
+    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--series)" }), document.createTextNode("Faster than year median (above)")),
+    h("span", { class: "lkey" }, h("i", { class: "lswatch", style: "background:var(--series);opacity:0.55" }), document.createTextNode("Slower (below)")),
   ));
   root.append(svg);
   root.append(dataTable(
-    ["Into station", "Leg miles", "Pace ratio", "Median pace (min/mi)"],
-    rows.map((r) => [r.name, fmt1(r.leg_mi), fmt1(r.ratio), fmt1(r.pace)]),
-    "Median leg pace relative to each runner's overall pace"));
+    ["Into station", "Leg miles", "Leg speed (mph)", "Median pace (min/mi)"],
+    rows.map((r) => [r.name, fmt1(r.leg_mi), fmt1(r.mph), fmt1(r.pace)]),
+    "Median leg speed by station, in miles per hour"));
 }
 
 /* ---------- chart 4: flow heatmap (sequential one-hue ramp) ---------- */
@@ -641,8 +677,8 @@ function syncStationSel() {
 /* ---------- planner chart A: leg pace vs final overall pace (scatter) ---------- */
 function renderPlanner() {
   const P = DATA.planner;
-  const root = card("card-planner", "Leg pace vs. your final pace",
-    "Each dot is one finisher on the leg into one aid station, all years. Below 1.0 = that leg ran faster than their whole-race average; above 1.0 = a slower, harder leg. Pick a station to highlight it; add a goal finish for that cohort's average line.");
+  const root = card("card-planner", "Leg speed vs. your final pace",
+    "Each dot is one finisher on the leg into one aid station, all years. Above 1.0 = that leg ran faster than their whole-race average; below 1.0 = a slower, harder leg. Pick a station to highlight it; add a goal finish for that cohort's average line.");
   const GL = 54, GR = 18, W = 1040, TOP = 14, AXH = 36, PH = 300;
   const H = TOP + PH + AXH;
   const XMAX = Math.ceil(DATA.course.total_mi / 10) * 10;
@@ -652,7 +688,7 @@ function renderPlanner() {
   const x = (mi) => GL + (mi / XMAX) * (W - GL - GR);
   const y = (v) => TOP + ((hi - v) / (hi - lo)) * PH;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
-    "aria-label": "Leg pace divided by final overall pace, per aid station, all finishers" });
+    "aria-label": "Leg speed relative to final overall pace, per aid station, all finishers" });
 
   for (let v = Math.ceil(lo * 10) / 10; v <= hi + 1e-6; v += 0.1) {
     const vy = y(v);
@@ -661,16 +697,49 @@ function renderPlanner() {
   }
   svg.append(s("line", { x1: GL, x2: W - GR, y1: y(1), y2: y(1), class: "baseline" }));
   svg.append(s("text", { x: W - GR, y: y(1) - 6, "text-anchor": "end", class: "axis-txt", text: "1.0 = final overall pace" }));
+  // Y-axis title: speed framing, higher = faster.
+  svg.append(s("text", { x: 14, y: TOP + PH / 2, "text-anchor": "middle", class: "axis-txt",
+    transform: `rotate(-90 14 ${TOP + PH / 2})`, text: "Speed Relative To Final (higher means faster segment)" }));
   for (let mi = 0; mi <= XMAX; mi += 20)
     svg.append(s("text", { x: x(mi), y: H - AXH + 18, "text-anchor": "middle", class: "axis-txt", text: mi + " mi" }));
 
+  // Beeswarm: within each station, offset points horizontally by local density
+  // (nearest free slot at their y) so they fan out instead of stacking into one
+  // vertical strip. Each swarm is centered on its 2026 station mile.
   const sel = state.sid;
-  const selPts = [], otherPts = [];
-  for (const p of P.points) (p[2] === sel ? selPts : otherPts).push(p);
-  for (const p of otherPts)
-    svg.append(s("circle", { cx: x(p[0]), cy: y(p[1]), r: 1.8, fill: "var(--deemph)", "fill-opacity": 0.5 }));
-  for (const p of selPts)
-    svg.append(s("circle", { cx: x(p[0]), cy: y(p[1]), r: 2.4, fill: "var(--series)", "fill-opacity": 0.75 }));
+  const R = 2.0, MAXOFF = 13;
+  const bySid = new Map();
+  for (const p of P.points) {
+    if (!bySid.has(p[2])) bySid.set(p[2], []);
+    bySid.get(p[2]).push(p);
+  }
+  const placed = [];
+  for (const [sid, grp] of bySid) {
+    const st = stationById(sid);
+    const cx0 = st ? x(st[2]) : x(grp[0][0]);
+    const nodes = grp.map((p) => ({ cy: y(p[1]) })).sort((a, b) => a.cy - b.cy);
+    const done = [];
+    for (const nd of nodes) {
+      let off = 0;
+      for (let t = 0; ; t++) {
+        const cand = t === 0 ? 0 : (t % 2 ? 1 : -1) * Math.ceil(t / 2) * R;
+        if (Math.abs(cand) > MAXOFF) { off = Math.sign(cand || 1) * MAXOFF; break; }
+        let ok = true;
+        for (const dpt of done) {
+          if (Math.abs(dpt.cy - nd.cy) >= 2 * R) continue;
+          if (Math.abs(cx0 + cand - dpt.cx) < 2 * R) { ok = false; break; }
+        }
+        if (ok) { off = cand; break; }
+      }
+      const cx = cx0 + off;
+      done.push({ cx, cy: nd.cy });
+      placed.push({ cx, cy: nd.cy, sel: sid === sel });
+    }
+  }
+  for (const q of placed) if (!q.sel)
+    svg.append(s("circle", { cx: q.cx, cy: q.cy, r: 1.7, fill: "var(--deemph)", "fill-opacity": 0.5 }));
+  for (const q of placed) if (q.sel)
+    svg.append(s("circle", { cx: q.cx, cy: q.cy, r: 2.2, fill: "var(--series)", "fill-opacity": 0.8 }));
 
   const haveTrend = state.finishHr != null && P.trend[String(state.finishHr)];
   if (haveTrend) {
@@ -723,13 +792,13 @@ function renderPlanner() {
   root.append(legend);
   root.append(svg);
   root.append(dataTable(
-    ["Aid station", "Miles", "Avg leg ÷ final", "Finishers", state.finishHr != null ? `${state.finishHr} h cohort` : "Goal cohort"],
+    ["Aid station", "Miles", "Avg speed vs final", "Finishers", state.finishHr != null ? `${state.finishHr} h cohort` : "Goal cohort"],
     sts.map((st) => {
       const a = P.avg[String(st[0])];
       const c = haveTrend ? P.trend[String(state.finishHr)].find((t) => t[0] === st[0]) : null;
       return [st[1], st[2], a ? a[0].toFixed(3) : null, a ? a[1] : null, c ? c[1].toFixed(3) : null];
     }),
-    "Leg-pace ratio by aid station, all finishers"));
+    "Leg-speed ratio by aid station, all finishers"));
 }
 
 /* ---------- planner chart B: arrival-time distribution ---------- */
@@ -808,54 +877,226 @@ function renderArrivalWindow() {
   root.append(dataTable(["Arrival window", "Runners"], tbl, "Arrivals by half-hour at " + (st ? st[1] : "")));
 }
 
-/* ---------- planner chart C: Leaflet course map (network tiles) ---------- */
-let map = null, highlightLine = null;
+/* ---------- planner chart C: self-contained SVG course map (no network) ---------- */
 // Map lines use their own fixed colors (not the theme greens): a vivid blue
 // full course with a deep-purple highlight for the leg just run.
 const MAP_ROUTE_COLOR = "#0E9BEE";
 const MAP_HIGHLIGHT_COLOR = "#4e2da6";
+let mapEls = null;  // { proj, highlight, curLabel } once built
+
+// Equirectangular projection fitted to the route bounds: lon is scaled by
+// cos(latMid) so the aspect ratio stays true at this latitude. Returns a
+// function (lat, lon) -> [px, py] into the W×H viewBox, north up.
+function buildMapProjection(route, W, H, pad) {
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for (const [lat, lon] of route) {
+    if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon; if (lon > maxLon) maxLon = lon;
+  }
+  const k = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+  const x0 = minLon * k, y0 = -maxLat;                 // top-left of projected box
+  const spanX = Math.max(1e-9, maxLon * k - x0);
+  const spanY = Math.max(1e-9, -minLat - y0);
+  const sc = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+  const offX = (W - sc * spanX) / 2, offY = (H - sc * spanY) / 2;
+  return (lat, lon) => [offX + (lon * k - x0) * sc, offY + (-lat - y0) * sc];
+}
+function mapPath(pts, proj) {
+  let d = "";
+  pts.forEach(([lat, lon], i) => {
+    const [px, py] = proj(lat, lon);
+    d += (i === 0 ? "M" : "L") + px.toFixed(1) + "," + py.toFixed(1) + " ";
+  });
+  return d;
+}
 function initMap() {
   const root = document.getElementById("card-map");
   root.replaceChildren(h("div", { class: "chead" },
     h("div", {}, h("h2", { text: "Course map — 2026" }),
       h("p", { class: "csub", text: "The highlighted section is the leg into the selected aid station." }))));
-  const mapDiv = h("div", { id: "es-map" });
-  root.append(mapDiv);
-  if (!window.L) {
-    root.append(h("p", { class: "note-muted",
-      text: "Map tiles could not be loaded (offline). Every other card works without a network connection." }));
-    return;
-  }
   const C = DATA.course;
-  map = L.map(mapDiv, { scrollWheelZoom: false }).fitBounds(C.route);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 17, attribution: "© OpenStreetMap contributors",
-  }).addTo(map);
-  L.polyline(C.route, { color: MAP_ROUTE_COLOR, weight: 4, opacity: 1 }).addTo(map);
+  const W = 1040, H = 560, pad = 46;
+  const proj = buildMapProjection(C.route, W, H, pad);
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Map of the 2026 Eastern States 100 course with aid stations" });
+
+  svg.append(s("path", { d: mapPath(C.route, proj), fill: "none", stroke: MAP_ROUTE_COLOR,
+    "stroke-width": 3, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  const highlight = s("path", { d: "", fill: "none", stroke: MAP_HIGHLIGHT_COLOR,
+    "stroke-width": 6, "stroke-linejoin": "round", "stroke-linecap": "round" });
+  svg.append(highlight);
+  const curLabel = s("text", { x: 0, y: 0, class: "map-lbl", "text-anchor": "start", text: "" });
+
   C.stations.forEach((st) => {
     const [id, name, lat, lon, mi] = st;
-    const mk = L.circleMarker([lat, lon], {
-      radius: 5, color: cssVar("--series-strong"), weight: 2,
-      fillColor: cssVar("--surface"), fillOpacity: 1,
-    });
-    mk.bindTooltip(`${name} · ${mi} mi`);
-    if (id > 0) mk.on("click", () => {
+    const [px, py] = proj(lat, lon);
+    const dot = s("circle", { cx: px, cy: py, r: 5, fill: "var(--surface)",
+      stroke: "var(--series-strong)", "stroke-width": 2, class: "mapdot" });
+    hover(dot, (e) => tipShow(e, `${name} · ${mi} mi`, []));
+    if (id > 0) dot.addEventListener("click", () => {
       state.sid = id; syncStationSel(); renderPlanner(); renderArrivalWindow(); updateMap();
     });
-    mk.addTo(map);
+    svg.append(dot);
   });
+  svg.append(curLabel);  // above the dots so it stays legible
+  root.append(svg);
+  mapEls = { proj, highlight, curLabel };
   updateMap();
 }
 function updateMap() {
-  if (!map) return;
+  if (!mapEls) return;
   const C = DATA.course;
   const cur = C.stations.find((r) => r[0] === state.sid);
   const prev = C.stations.find((r) => r[0] === state.sid - 1);
-  if (!cur) return;
+  if (!cur) { mapEls.highlight.setAttribute("d", ""); mapEls.curLabel.textContent = ""; return; }
   const startIdx = prev ? prev[5] : 0;
-  const slice = C.route.slice(startIdx, cur[5] + 1);
-  if (highlightLine) highlightLine.remove();
-  highlightLine = L.polyline(slice, { color: MAP_HIGHLIGHT_COLOR, weight: 6, opacity: 1 }).addTo(map);
+  mapEls.highlight.setAttribute("d", mapPath(C.route.slice(startIdx, cur[5] + 1), mapEls.proj));
+  const [px, py] = mapEls.proj(cur[2], cur[3]);
+  mapEls.curLabel.setAttribute("x", px + 8);
+  mapEls.curLabel.setAttribute("y", py - 8);
+  mapEls.curLabel.textContent = `${cur[1]} · ${cur[4]} mi`;
+}
+
+/* ---------- race-day pacing planner (self-contained, offline) ---------- */
+// Distribute the goal finish across legs by each leg's typical speed (slower
+// legs take proportionally more time), then rescale to demonstrated pace as
+// actual arrivals come in. Every input aggregate is already embedded in
+// DATA.planner (trend / avg speed ratios + cohort arrival bands).
+let paceRows = null;  // per-station row refs for in-place recompute
+
+// 2026 stations as legs from the start: [{sid, name, mi, leg}], sorted by mile.
+function paceStations() {
+  const sts = [...DATA.planner.stations].sort((a, b) => a[2] - b[2]);
+  let prevMi = 0;
+  return sts.map(([sid, name, mi]) => {
+    const row = { sid, name, mi, leg: Math.max(0.01, mi - prevMi) };
+    prevMi = mi;
+    return row;
+  });
+}
+// Typical speed ratio for the leg into a station under a goal: the goal-cohort
+// trend, else the all-runner average, else 1.0. Higher = that leg runs faster.
+function legSpeedRatio(sid, goal) {
+  const tr = DATA.planner.trend[String(Math.round(goal))];
+  if (tr) { const c = tr.find((t) => t[0] === sid); if (c) return c[1]; }
+  const a = DATA.planner.avg[String(sid)];
+  return a ? a[0] : 1.0;
+}
+// Model cumulative elapsed hours at each station: leg time ∝ distance ÷ typical
+// speed, normalized so the finish equals the goal exactly.
+function paceModel(rows, goal) {
+  const w = rows.map((r) => r.leg / Math.max(0.3, legSpeedRatio(r.sid, goal)));
+  const sumW = w.reduce((s, v) => s + v, 0) || 1;
+  let cum = 0;
+  return rows.map((r, i) => { cum += goal * w[i] / sumW; return cum; });
+}
+// Parse an actual arrival: "HH:MM" clock time (day inferred to sit nearest the
+// model estimate) or a bare number of elapsed hours. Returns elapsed hrs / null.
+function parseActual(raw, refElapsed) {
+  if (raw == null) return null;
+  const t = String(raw).trim();
+  if (t === "") return null;
+  if (t.includes(":")) {
+    const m = t.match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    let e = (Number(m[1]) + Number(m[2]) / 60) - 5;  // race starts 05:00
+    while (e < -6) e += 24;                            // into the race window
+    if (Math.abs(e + 24 - refElapsed) < Math.abs(e - refElapsed)) e += 24;  // next day
+    return e;
+  }
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+function renderPacing() {
+  const root = document.getElementById("card-pacing");
+  root.replaceChildren(h("div", { class: "chead" },
+    h("div", {}, h("h2", { text: "Predicted arrival by aid station" }),
+      h("p", { class: "csub", text: "Predicted from your goal and the course's typical leg-by-leg pacing. Enter actual arrivals to re-project the finish and the stations still ahead." }))));
+  const goal = state.pace.goal;
+  if (goal == null || !(goal > 0)) {
+    paceRows = null;
+    root.append(h("p", { class: "note-muted", text: "Enter a goal finish time above to build the plan." }));
+    return;
+  }
+  const rows = paceStations();
+  const model = paceModel(rows, goal);
+  const blk = String(Math.round(goal));
+
+  const finishLine = h("p", { class: "pace-finish" });
+  root.append(finishLine);
+
+  const tbl = h("table", { class: "pace-tbl" });
+  tbl.append(h("thead", {}, h("tr", {},
+    h("th", { text: "Aid station" }), h("th", { text: "Mile" }),
+    h("th", { text: "Predicted" }), h("th", { text: "Typical range" }),
+    h("th", { text: "Actual arrival" }), h("th", { text: "Revised" }))));
+  const tbody = h("tbody", {});
+  paceRows = [];
+  rows.forEach((r, i) => {
+    const cohort = (DATA.planner.arrivals.cohort[String(r.sid)] || {})[blk];
+    const rangeTxt = cohort ? `${fmtTod(cohort[0])} – ${fmtTod(cohort[2])}` : "—";
+    const input = h("input", { class: "actin", type: "text", inputmode: "numeric",
+      placeholder: "hh:mm", "aria-label": `Actual arrival at ${r.name}`,
+      value: state.pace.actuals[r.sid] || "" });
+    input.addEventListener("input", () => {
+      const v = input.value.trim();
+      if (v === "") delete state.pace.actuals[r.sid]; else state.pace.actuals[r.sid] = v;
+      recomputePacing();
+    });
+    const revisedCell = h("td", { text: "—" });
+    const tr = h("tr", {},
+      h("td", { text: r.name }), h("td", { text: String(r.mi) }),
+      h("td", { text: fmtTod(model[i]) }), h("td", { text: rangeTxt }),
+      h("td", {}, input), revisedCell);
+    tbody.append(tr);
+    paceRows.push({ r, model: model[i], input, revisedCell, tr });
+  });
+  tbl.append(tbody);
+  root.append(tbl);
+  root.append(h("p", { class: "note-muted",
+    text: "Predicted uses the goal-cohort leg shape; typical range is the middle 50% of past finishers on that schedule (— where fewer than 5 reached the station). Clock times; race starts 05:00, “+1” = next day." }));
+  paceRows._finishLine = finishLine;
+  paceRows._goal = goal;
+  recomputePacing();
+}
+
+// Recompute revised ETAs + projected finish in place (no input rebuild), so the
+// crew can keep typing. The furthest-mile actual anchors the re-projection.
+function recomputePacing() {
+  if (!paceRows) return;
+  const goal = paceRows._goal;
+  let anchor = null;
+  paceRows.forEach((pr) => {
+    const e = parseActual(pr.input.value, pr.model);
+    pr.actual = e;
+    if (e != null && (anchor == null || pr.r.mi > anchor.mi))
+      anchor = { mi: pr.r.mi, model: pr.model, actual: e };
+  });
+  const f = anchor ? anchor.actual / Math.max(0.1, anchor.model) : 1;
+  paceRows.forEach((pr) => {
+    let revised;
+    if (pr.actual != null) revised = pr.actual;
+    else if (anchor) revised = anchor.actual + (pr.model - anchor.model) * f;
+    else revised = pr.model;
+    pr.revisedCell.textContent = fmtTod(revised);
+    pr.tr.classList.toggle("reached", pr.actual != null);
+  });
+  const fin = paceRows._finishLine;
+  if (anchor) {
+    const projFinish = anchor.actual + (goal - anchor.model) * f;
+    const delta = projFinish - goal;
+    fin.replaceChildren(
+      document.createTextNode("Projected finish "),
+      h("b", { text: fmtTod(projFinish) }),
+      document.createTextNode(`  (elapsed ${projFinish.toFixed(1)} h · `
+        + `${delta >= 0 ? "+" : "−"}${Math.abs(delta * 60).toFixed(0)} min vs goal)`));
+  } else {
+    fin.replaceChildren(
+      document.createTextNode("Goal finish "),
+      h("b", { text: fmtTod(goal) }),
+      document.createTextNode(`  (elapsed ${goal.toFixed(1)} h — enter an actual arrival to re-project)`));
+  }
 }
 
 /* ---------- planner controls ---------- */
@@ -879,6 +1120,18 @@ function initPlannerControls() {
   document.getElementById("finishclear").addEventListener("click", () => {
     fin.value = ""; state.finishHr = null; renderPlanner(); renderArrivalWindow();
   });
+
+  // Race-day pacing planner: goal input rebuilds the plan; actuals persist in
+  // state.pace and re-project in place via each row's own input handler.
+  const pg = document.getElementById("paceGoal");
+  pg.addEventListener("input", () => {
+    const v = pg.value === "" ? null : Number(pg.value);
+    state.pace.goal = v == null || !Number.isFinite(v) || v <= 0 ? null : v;
+    renderPacing();
+  });
+  document.getElementById("paceReset").addEventListener("click", () => {
+    state.pace.actuals = {}; renderPacing();
+  });
 }
 
 function render() {
@@ -894,6 +1147,7 @@ function render() {
   renderPlanner();
   renderArrivalWindow();
   updateMap();
+  renderPacing();
 }
 render();
 initPlannerControls();
