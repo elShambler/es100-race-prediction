@@ -111,8 +111,10 @@ guardrails:
    `stoppage_imputed` — downstream consumers (and the dashboard) can always
    separate observed from estimated values.
 
-Latest run: **1,924 check-ins** (mostly 2025) and **~1,050 check-outs**
-imputed; zero null check-ins remain in `es_splits_2021_2025_imputed`.
+Latest run: **1,924 check-ins** (mostly 2025) and **5,079 check-outs**
+imputed; zero null check-ins remain in `es_splits_imputed`. The check-out count
+is large because imputation now runs on all years (`es_splits_all`) and
+2016-2017 recorded no check-outs at all — every departure there is predicted.
 
 ## Tracking & reproducibility
 
