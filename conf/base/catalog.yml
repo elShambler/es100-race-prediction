@@ -129,10 +129,12 @@ es_stoppage_model_metrics_tracked:
     kedro-viz:
       layer: models
 
-# 2021-2025 splits with missing check-in/check-out elapsed times imputed
-es_splits_2021_2025_imputed:
+# All-years splits with missing check-in/check-out elapsed times imputed
+# (2016-2017 has no recorded check-outs at all, so every departure there is
+# predicted by the stoppage model).
+es_splits_imputed:
   type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
-  filepath: data/04_feature/es_splits_2021_2025_imputed.csv
+  filepath: data/04_feature/es_splits_imputed.csv
   load_args:
     schema_overrides:
       as_check_in__elapsed__min: ${polars:Float64}
@@ -186,10 +188,10 @@ es_station_xwalk:
     kedro-viz:
       layer: intermediate
 
-# Cumulative pace ÷ final pace per finisher × aid station, all years 2016–2025
-es_cumulative_ratio:
+# Interval (leg) pace ÷ final overall pace per finisher × aid station, all years
+es_interval_ratio:
   type: eastern_states_pace_predict.datasets.polars_preview_csv_dataset.PolarsPreviewCSVDataset
-  filepath: data/04_feature/es_cumulative_ratio.csv
+  filepath: data/04_feature/es_interval_ratio.csv
   metadata:
     kedro-viz:
       layer: feature
