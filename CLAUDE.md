@@ -137,30 +137,43 @@ map__historical_stations # match every (year, as_index) to a 2026 station by dis
 
 ### Feature Engineering Pipeline (`pipelines/feature_engineering/`)
 
-Consumes `es_splits_2021_2025_processed` (2021–2025 only; 2016-2017 has no check-out data at all):
+The model **trains** on `es_splits_2021_2025_processed` (only 2021-2023 have
+observed check-in/out pairs to learn from), but imputation and every downstream
+feature run on **all years** via `es_splits_all`:
 
 ```
 train__stoppage_model    # HistGradientBoostingRegressor for minutes spent in an AS
     → es_stoppage_model (pickle) + es_stoppage_model_metrics (JSON: MAE vs naive baseline)
-impute__missing_times    # fills missing check-in/check-out elapsed hours
-    → es_splits_2021_2025_imputed (04_feature)
+impute__missing_times    # fills missing check-in/check-out elapsed hours (es_splits_all in)
+    → es_splits_imputed (04_feature, all years)
 features__interval_pace  # interval pace, overall pace, pace ratio per runner×AS
-    → es_interval_features (04_feature)
-features__cumulative_ratio  # all-years cumulative-pace-vs-final-pace, finishers only
-    → es_cumulative_ratio (04_feature)
+    → es_interval_features (04_feature, all years)
+features__interval_ratio # leg-pace-vs-final-overall-pace, finishers only
+    → es_interval_ratio (04_feature)
 ```
 
-**`features__cumulative_ratio`** (inputs `es_splits_all`, `es_asinfo_historical`,
-`es_station_xwalk`) is the shared artifact behind both the static blog figure and
-the dashboard planner card, so the logic lives in one place:
+**All years incl. 2016-2017 flow through the feature pipeline.** 2016-2017 has no
+recorded check-outs at all, so `impute__missing_times` predicts the stoppage at
+every one of their stations with the trained model and sets `check-out = arrival
++ predicted stoppage`. That imputed departure is what lets `features__interval_pace`
+compute a **moving** interval pace (previous departure → this arrival) for those
+years. Consequence: the per-year dashboard cards now cover 2016-2025, but the
+observed-stoppage card is suppressed for 2016-2017 (0% observed coverage — every
+stop is predicted, so the coverage guard hides it, honestly).
 
-- Finishers only (`FinishRank != "DNF"`, `finish_elapsed_mins` non-null), rows
-  with elapsed + `as_dist_from_start > 0`; **all six years incl. 2016-2017**.
-- `cum_pace = as_check_in__elapsed__min * 60 / as_dist_from_start` — the ×60 is
-  the decimal-hours trap (the `__min` column is really hours). `final_pace =
-  finish_elapsed_mins / per_year_finish_dist` (finish distance from the
-  `flag_finish` row). `cum_ratio = cum_pace / final_pace` (≈1.0 at the finish
-  station is the sentinel that the ×60 is right).
+**`features__interval_ratio`** (inputs `es_interval_features`, `es_station_xwalk`)
+is the shared artifact behind both the static blog figure and the dashboard
+planner card:
+
+- Finishers only (`FinishRank != "DNF"`, `finish_elapsed_hrs` non-null), rows with
+  a non-null `as_interval_pace_ratio` and `as_dist_from_start > 0`.
+- `interval_ratio = as_interval_pace_ratio` = the moving pace on the leg *into*
+  the station ÷ the runner's final overall pace. Below 1.0 = that leg ran faster
+  than their whole-race average; above 1.0 = a slower/harder leg. **The ×60
+  hours→minutes factor cancels** (numerator and denominator both carry it), so
+  the ratio is unit-safe — no decimal-hours trap here. Field-wide median ≈ 0.93
+  (moving legs are a touch faster than overall pace, which includes stoppage);
+  that median is the sentinel test.
 - `finish_hr_block = floor(finish_elapsed_hrs + 0.5)` (block = [h−0.5, h+0.5)),
   left-joined to `es_station_xwalk` for `station_2026` / `station_mi_2026`.
 
@@ -174,27 +187,36 @@ JSON into `template.html` (sits next to `nodes.py`) → `es_as_dashboard` =
 CSS/JS) **except the course-map card**, which loads Leaflet 1.9.4 + OpenStreetMap
 tiles over the network (accepted trade-off; the map degrades to a note offline,
 every other card still works). Design notes: charts are hand-built SVG following
-the dataviz skill (validated palette, light+dark via CSS custom properties,
-per-mark tooltips, table-view toggle per card). Stoppage medians are suppressed
-where observed check-in/out pairs cover <30% of a station's visits (2025's sparse
-check-ins leave a biased subset); the flow heatmap color scale caps at the 95th
-percentile of non-zero cells.
+the dataviz skill. **The dashboard mirrors the project matplotlib theme
+(`mpl_theme.py`): light-only** (no dark mode), blue-gray panel `#e6e8ef`, dotted
+grid, uppercase bold titles + ochre `#a87b1e` subtitles, and **Geist Mono
+embedded as a base64 `woff2` `@font-face`** in `template.html` (Latin subset,
+~31 KB, keeps the page self-contained). Chart palettes are remapped to the theme
+greens and **validated with `scripts/validate_palette.js`** against the panel:
+the cohort scatter uses the slate-green ordinal ramp, the flow heatmap a
+7-step green sequential ramp, and the leg-difficulty chart is **single-hue with
+the 1.0 baseline encoding direction** (green + ochre fails red-green CVD as a
+diverging pair, so bar direction + opacity carry slower/faster instead). Per-mark
+tooltips + table-view toggle per card. Stoppage medians are suppressed where
+observed check-in/out pairs cover <30% of a station's visits (all of 2016-2017
+and 2025's sparse check-ins leave a biased subset); the flow heatmap color scale
+caps at the 95th percentile of non-zero cells.
 
-- Inputs beyond `es_interval_features`: `es_cumulative_ratio`, `es_splits_all`,
+- Inputs beyond `es_interval_features`: `es_interval_ratio`, `es_splits_all`,
   `es_course_route`, `es_course_stations`, `es_station_xwalk`, `params:reporting`.
 - Top-level payload keys `planner` and `course` (helpers `_planner_payload` /
-  `_course_payload`) drive the planner scatter (cumulative ÷ final pace, station
-  selector + goal-finish trend line), the arrival-time distribution (half-hour
-  bins + goal-cohort p25–p75 band), and the Leaflet map (highlights the leg into
-  the selected station). Per-year cards cover 2021–2025; planner cards pool all
-  years 2016–2025.
+  `_course_payload`) drive the planner scatter (leg pace ÷ final overall pace,
+  station selector + goal-finish trend line), the arrival-time distribution
+  (half-hour bins + goal-cohort p25–p75 band), and the Leaflet map (highlights the
+  leg into the selected station). Per-year cards now cover 2016–2025; planner
+  cards pool all years.
 - Size control (`conf/base/parameters_reporting.yml`): the scatter is
   stratified-sampled to `max_scatter_points` (aggregates always from full data);
   the route is downsampled to `max_route_points` keeping station vertices, coords
   rounded to `coord_decimals`. Page is ~190 KB (well under the 1 MB test bound);
   the existing `</`→`<\/` JSON escaping still applies.
-- **Static blog figures**: `plot__blog_cumulative_ratio` (input
-  `es_cumulative_ratio`) renders the cumulative-ratio scatter with `mpl_theme`
+- **Static blog figures**: `plot__blog_interval_ratio` (input
+  `es_interval_ratio`) renders the leg-pace-ratio scatter with `mpl_theme`
   → `es_blog_figures` (PNG) + `es_blog_figures_svg` (SVG) under
   `data/08_reporting/blog_figures/`. `MatplotlibWriter` saves through a buffer so
   it can't infer format from the filename — each format needs its **own catalog
@@ -214,8 +236,8 @@ percentile of non-zero cells.
 |---|---|---|
 | Source format | Long (one row per runner×AS) | Wide (one row per runner, 17 AS columns) |
 | Elapsed times | Pre-computed in source | Computed in pipeline |
-| Check-out times | Absent | Partial |
-| Demographics | Absent | Joined from finish times |
+| Check-out times | Absent (all imputed via the stoppage model) | Partial |
+| Demographics | Absent for DNFs, present for finishers | Joined from finish times |
 | Finish station | AS_18 row | Identified via `flag_finish` in as_info |
 
 The raw 2016-2017 file (`es100_2016-2017.csv`) already has all elapsed/datetime columns. It does not need the unpivot step.
