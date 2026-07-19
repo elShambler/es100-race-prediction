@@ -21,7 +21,7 @@ ROOT = Path(__file__).parent.parent
 ROUTE = ROOT / "data/02_intermediate/es_course_route.csv"
 STATIONS = ROOT / "data/02_intermediate/es_course_stations.csv"
 XWALK = ROOT / "data/02_intermediate/es_station_xwalk.csv"
-RATIO = ROOT / "data/04_feature/es_cumulative_ratio.csv"
+RATIO = ROOT / "data/04_feature/es_interval_ratio.csv"
 ALL_SPLITS = ROOT / "data/02_intermediate/es_splits_all.csv"
 DASHBOARD = ROOT / "data/08_reporting/es_as_dashboard.html"
 BLOG_DIR = ROOT / "data/08_reporting/blog_figures"
@@ -129,7 +129,7 @@ def test_all_deltas_within_tolerance(xwalk):
 
 
 # ---------------------------------------------------------------------------
-# Cumulative ratio — the ×60 hours-conversion trap
+# Interval (leg) ratio — leg pace ÷ final overall pace
 # ---------------------------------------------------------------------------
 
 
@@ -144,25 +144,31 @@ def test_ratio_has_six_years_no_dnf(ratio):
 
 def test_ratio_values_sane(ratio):
     frac = (
-        ratio.filter((pl.col("cum_ratio") > 0.5) & (pl.col("cum_ratio") < 2.0)).height
+        ratio.filter(
+            (pl.col("interval_ratio") > 0.3) & (pl.col("interval_ratio") < 3.0)
+        ).height
         / ratio.height
     )
-    assert frac >= 0.99, f"only {frac:.3f} of ratios in (0.5, 2.0)"
+    assert frac >= 0.99, f"only {frac:.3f} of interval ratios in (0.3, 3.0)"
 
 
-def test_finish_station_ratio_near_one(ratio):
-    """At each year's finishing station, cumulative pace == final pace (≈1.0).
-
-    This is the sentinel for the ×60 decimal-hours conversion: if the hours→
-    minutes factor were wrong, the finish-station ratio would be off by ~60×.
-    2025 has no finish split row, so it is excluded.
+def test_interval_ratio_centered(ratio):
+    """The interval ratio is unit-safe by construction (the ×60 hours→minutes
+    factor cancels between leg pace and overall pace), so the field-wide median
+    must sit just below 1.0 — moving legs are slightly faster than overall pace,
+    which includes aid-station time. A unit or definition slip would push this
+    far off (e.g. ~60× or ~0.017×).
     """
-    for yr in [2016, 2017, 2021, 2022, 2023]:
-        yz = ratio.filter(pl.col("year") == yr)
-        last_mi = yz["as_dist_from_start"].max()
-        finish_rows = yz.filter(pl.col("as_dist_from_start") == last_mi)
-        med = finish_rows["cum_ratio"].median()
-        assert 0.98 <= med <= 1.02, f"{yr} finish-station median ratio {med:.4f}"
+    med = ratio["interval_ratio"].median()
+    assert 0.75 <= med <= 1.05, f"median interval ratio {med:.3f} outside sane band"
+
+
+def test_final_pace_magnitude(ratio):
+    """Sanity on the denominator: a 20–36 h finish over ~103 mi is ~11.6–21
+    min/mile overall — a coarse guard that the pace units are minutes/mile.
+    """
+    fp = ratio["final_pace_min_per_mi"].median()
+    assert 10 <= fp <= 24, f"median final pace {fp:.1f} min/mi out of range"
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +221,8 @@ def test_dashboard_size_bounded():
 
 
 def test_blog_figures_exist():
-    png = BLOG_DIR / "cumulative_ratio_scatter.png"
-    svg = BLOG_DIR / "cumulative_ratio_scatter.svg"
+    png = BLOG_DIR / "interval_ratio_scatter.png"
+    svg = BLOG_DIR / "interval_ratio_scatter.svg"
     assert png.exists() and png.stat().st_size > 10_000, "PNG missing or trivial"
     assert svg.exists() and svg.stat().st_size > 10_000, "SVG missing or trivial"
     assert (
