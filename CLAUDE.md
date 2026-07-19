@@ -183,20 +183,25 @@ planner card:
 windows, observed stoppage by cohort, leg pace ratios, hourly flow, DNF drop
 points) plus three **year-independent, all-years** planner cards, and injects the
 JSON into `template.html` (sits next to `nodes.py`) → `es_as_dashboard` =
-`data/08_reporting/es_as_dashboard.html`. The page is self-contained (inline
-CSS/JS) **except the course-map card**, which loads Leaflet 1.9.4 + OpenStreetMap
-tiles over the network (accepted trade-off; the map degrades to a note offline,
-every other card still works). Design notes: charts are hand-built SVG following
-the dataviz skill. **The dashboard mirrors the project matplotlib theme
+`data/08_reporting/es_as_dashboard.html`. The page is **fully self-contained
+(inline CSS/JS, no external scripts/styles/fonts/tiles) and works offline** —
+including the course-map card, which is now a hand-built inline SVG projection of
+the route (equirectangular, `cos(lat)` corrected) rather than Leaflet/OSM tiles.
+This matters because the dashboard doubles as a race-day crew tool with no cell
+service. Design notes: charts are hand-built SVG following the dataviz skill. **The dashboard mirrors the project matplotlib theme
 (`mpl_theme.py`): light-only** (no dark mode), blue-gray panel `#e6e8ef`, dotted
 grid, uppercase bold titles + ochre `#a87b1e` subtitles, and **Geist Mono
 embedded as a base64 `woff2` `@font-face`** in `template.html` (Latin subset,
 ~31 KB, keeps the page self-contained). Chart palettes are remapped to the theme
 greens and **validated with `scripts/validate_palette.js`** against the panel:
 the cohort scatter uses the slate-green ordinal ramp, the flow heatmap a
-7-step green sequential ramp, and the leg-difficulty chart is **single-hue with
-the 1.0 baseline encoding direction** (green + ochre fails red-green CVD as a
-diverging pair, so bar direction + opacity carry slower/faster instead). Per-mark
+7-step green sequential ramp, and the per-year leg-speed chart is **single-hue
+with a baseline encoding direction** (green + ochre fails red-green CVD as a
+diverging pair, so bar direction + opacity carry faster/slower instead). The
+per-year leg chart shows **absolute mph** (bars vs the year's median-leg-speed
+line — deliberately the honest, compressed view); the **planner** scatter shows
+the **mph speed ratio** (see below), rendered as a **beeswarm** (points fanned by
+local density per station, not a vertical strip). Per-mark
 tooltips + table-view toggle per card. Stoppage medians are suppressed where
 observed check-in/out pairs cover <30% of a station's visits (all of 2016-2017
 and 2025's sparse check-ins leave a biased subset); the flow heatmap color scale
@@ -205,18 +210,41 @@ caps at the 95th percentile of non-zero cells.
 - Inputs beyond `es_interval_features`: `es_interval_ratio`, `es_splits_all`,
   `es_course_route`, `es_course_stations`, `es_station_xwalk`, `params:reporting`.
 - Top-level payload keys `planner` and `course` (helpers `_planner_payload` /
-  `_course_payload`) drive the planner scatter (leg pace ÷ final overall pace,
-  station selector + goal-finish trend line), the arrival-time distribution
-  (half-hour bins + goal-cohort p25–p75 band), and the Leaflet map (highlights the
-  leg into the selected station). Per-year cards now cover 2016–2025; planner
-  cards pool all years.
+  `_course_payload`) drive the planner scatter (leg **speed** relative to final
+  overall pace, station selector + goal-finish trend line), the arrival-time
+  distribution (half-hour bins + goal-cohort p25–p75 band), and the inline-SVG
+  course map (highlights the leg into the selected station). Per-year cards now
+  cover 2016–2025; planner cards pool all years.
+- **Speed metrics** (`es_interval_ratio.interval_ratio` / `as_interval_pace_ratio`
+  stay a **pace ratio** on disk — leg pace ÷ final pace, <1 = faster — inverted in
+  the reporting layer **per-row before aggregating**, since median(1/x) ≠
+  1/median(x)):
+  - **Per-year leg card** (`_year_payload`, `renderLegs`): **absolute mph** via
+    `_leg_mph_expr` (60 ÷ leg pace). `legs[].mph` = per-station median; year-level
+    `median_leg_speed` is the reference line. Bars diverge from that line (above =
+    faster than the year's typical leg). No ratio here — mph is the honest,
+    compressed view the field actually runs.
+  - **Planner scatter + blog figure** (`_planner_payload`, `plot_blog_interval_ratio`):
+    the **mph speed ratio** = final pace ÷ leg pace = `1/pace_ratio` via
+    `_speed_ratio_expr` (**>1 = faster**), axis "Speed Relative To Final (higher
+    means faster segment)". `planner.avg` / `planner.trend` means are in these
+    ratio units (the pacing planner reads them back as speed).
+- **Race-day pacing planner** (`#card-pacing`, `renderPacing`/`recomputePacing`
+  in `template.html`, no Python — pure client-side over `DATA.planner`): a crew
+  member enters a goal finish; the plan distributes it across legs by each leg's
+  typical speed (`trend`/`avg` speed ratios, leg time ∝ distance ÷ speed,
+  normalized so the finish equals the goal) and shows a per-station predicted
+  arrival + the goal-cohort p25–p75 "typical range" (`arrivals.cohort`). Typing an
+  actual arrival re-projects in place: the furthest actual anchors a pace factor
+  `f = actual/model`, rescaling every downstream ETA and the finish. Fully
+  offline, no new pipeline outputs.
 - Size control (`conf/base/parameters_reporting.yml`): the scatter is
   stratified-sampled to `max_scatter_points` (aggregates always from full data);
   the route is downsampled to `max_route_points` keeping station vertices, coords
-  rounded to `coord_decimals`. Page is ~190 KB (well under the 1 MB test bound);
+  rounded to `coord_decimals`. Page is ~245 KB (well under the 1 MB test bound);
   the existing `</`→`<\/` JSON escaping still applies.
 - **Static blog figures**: `plot__blog_interval_ratio` (input
-  `es_interval_ratio`) renders the leg-pace-ratio scatter with `mpl_theme`
+  `es_interval_ratio`) renders the leg-**speed**-ratio scatter with `mpl_theme`
   → `es_blog_figures` (PNG) + `es_blog_figures_svg` (SVG) under
   `data/08_reporting/blog_figures/`. `MatplotlibWriter` saves through a buffer so
   it can't infer format from the filename — each format needs its **own catalog
