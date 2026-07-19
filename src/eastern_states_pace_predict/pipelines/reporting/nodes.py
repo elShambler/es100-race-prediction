@@ -221,7 +221,7 @@ def _planner_payload(
     points = [
         [
             round(r["as_dist_from_start"], 2),
-            round(r["cum_ratio"], 3),
+            round(r["interval_ratio"], 3),
             int(r["station_2026"]),
             int(r["finish_hr_block"]),
         ]
@@ -233,7 +233,7 @@ def _planner_payload(
     avg_df = (
         ratio.filter(pl.col("station_2026").is_not_null())
         .group_by("station_2026")
-        .agg(pl.col("cum_ratio").mean().alias("m"), pl.len().alias("n"))
+        .agg(pl.col("interval_ratio").mean().alias("m"), pl.len().alias("n"))
     )
     for r in avg_df.iter_rows(named=True):
         avg[str(int(r["station_2026"]))] = [round(r["m"], 3), int(r["n"])]
@@ -249,7 +249,7 @@ def _planner_payload(
             & (pl.col("finish_hr_block") <= fhr_max)
         )
         .group_by("finish_hr_block", "station_2026", "station_mi_2026")
-        .agg(pl.col("cum_ratio").mean().alias("m"), pl.len().alias("n"))
+        .agg(pl.col("interval_ratio").mean().alias("m"), pl.len().alias("n"))
         .filter(pl.col("n") >= MIN_GROUP_N)
         .sort("station_mi_2026")
     )
@@ -386,7 +386,7 @@ def build_as_dashboard(
     Leaflet map card is self-contained; the map pulls OpenStreetMap tiles over
     the network at view time.
 
-    Inputs: es_interval_features, es_cumulative_ratio, es_splits_all,
+    Inputs: es_interval_features, es_interval_ratio, es_splits_all,
         es_course_route, es_course_stations, es_station_xwalk, params:reporting
     Outputs: es_as_dashboard (text HTML, data/08_reporting)
     """
@@ -425,14 +425,17 @@ COHORTS = [
 ]
 
 
-def plot_blog_cumulative_ratio(ratio: pl.DataFrame) -> dict:
-    """Blog-ready scatter: cumulative pace vs final pace over the course.
+def plot_blog_interval_ratio(ratio: pl.DataFrame) -> dict:
+    """Blog-ready scatter: per-leg pace vs final overall pace over the course.
 
-    One point per finisher × aid station, all years; below 1.0 = ahead of the
-    runner's eventual overall pace. Per-cohort median lines use the 2026
-    station mile marks so all years share an x position.
+    One point per finisher × aid station, all years. Each point is the moving
+    pace on the leg *into* that station divided by the runner's final overall
+    pace: below 1.0 = that leg ran faster than their whole-race average, above
+    1.0 = a slower/harder leg. Per-cohort median lines use the 2026 station mile
+    marks so all years share an x position and trace the course's difficulty
+    profile.
 
-    Inputs: es_cumulative_ratio
+    Inputs: es_interval_ratio
     Outputs: es_blog_figures (PNG), es_blog_figures_svg (SVG)
     """
     mpl_theme.apply()
@@ -444,17 +447,17 @@ def plot_blog_cumulative_ratio(ratio: pl.DataFrame) -> dict:
         )
         ax.scatter(
             cohort["as_dist_from_start"],
-            cohort["cum_ratio"],
+            cohort["interval_ratio"],
             s=7,
             color=color,
-            alpha=0.25,
+            alpha=0.22,
             linewidths=0,
             label=None,
         )
         medians = (
             cohort.filter(pl.col("station_2026").is_not_null())
             .group_by("station_2026", "station_mi_2026")
-            .agg(pl.col("cum_ratio").median().alias("med"), pl.len().alias("n"))
+            .agg(pl.col("interval_ratio").median().alias("med"), pl.len().alias("n"))
             .filter(pl.col("n") >= MIN_GROUP_N)
             .sort("station_mi_2026")
         )
@@ -479,19 +482,19 @@ def plot_blog_cumulative_ratio(ratio: pl.DataFrame) -> dict:
         va="bottom",
     )
 
-    lo_y = max(0.55, ratio["cum_ratio"].quantile(0.005) - 0.02)
-    hi_y = min(1.35, ratio["cum_ratio"].quantile(0.995) + 0.02)
+    lo_y = max(0.4, ratio["interval_ratio"].quantile(0.01) - 0.03)
+    hi_y = min(2.4, ratio["interval_ratio"].quantile(0.99) + 0.03)
     ax.set_xlim(0, 106)
     ax.set_ylim(lo_y, hi_y)
-    ax.legend(title=None, loc="lower right", markerscale=1.5)
+    ax.legend(title=None, loc="upper left", markerscale=1.5)
     mpl_theme.set_title(
         ax,
-        "Everyone banks time early",
-        "Cumulative pace relative to final overall pace — finishers, 2016–2025",
+        "Which legs make you pay",
+        "Leg pace relative to final overall pace — finishers, 2016–2025",
     )
-    mpl_theme.set_labels(ax, "Distance from start [mi]", "Cumulative ÷ final pace")
+    mpl_theme.set_labels(ax, "Distance from start [mi]", "Leg ÷ final pace")
 
     return (
-        {"cumulative_ratio_scatter.png": fig},
-        {"cumulative_ratio_scatter.svg": fig},
+        {"interval_ratio_scatter.png": fig},
+        {"interval_ratio_scatter.svg": fig},
     )
