@@ -94,6 +94,22 @@ def enrich_2021_2025_splits(
     # null in both columns, then keep rows that still have at least one time —
     # 2025 recorded mostly departure times, so arrival-null rows must survive.
     _TOD_PATTERN = r"^\d{2}:\d{2}$"
+    # Targeted corrections for phantom/mis-keyed raw cells that survive the
+    # pattern sanitize (each value is individually well-formed HH:MM). Keyed by
+    # (year, bib, as_index); both TOD cells are nulled so the existing
+    # "keep rows with at least one time" filter below drops the whole row.
+    #   - (2025, 556, "AS_06"): the runner DNF'd at AS_05 Happy Dutchman
+    #     (raw as05_dep = "DNF"); the AS_06 Ritchie departure 15:32 is a phantom
+    #     (earlier than their own 16:47 AS_05 arrival) that the midnight-crossing
+    #     detector otherwise inflates to ~34.5 h at mile 38.5.
+    _TOD_CORRECTIONS = [(2025, 556, "AS_06")]
+    _correction_mask = pl.lit(False)
+    for _yr, _bib, _asx in _TOD_CORRECTIONS:
+        _correction_mask = _correction_mask | (
+            (pl.col("year") == _yr)
+            & (pl.col("bib").cast(pl.Int64, strict=False) == _bib)
+            & (pl.col("as_index") == _asx)
+        )
     df = (
         long_df.rename({"bib_number": "bib"})
         .with_columns(pl.col("year").cast(pl.Int64))
@@ -103,6 +119,12 @@ def enrich_2021_2025_splits(
                 .then(pl.col(c))
                 .otherwise(None)
                 .alias(c)
+                for c in ["as_check_in__tod", "as_check_out__tod"]
+            ]
+        )
+        .with_columns(
+            [
+                pl.when(_correction_mask).then(None).otherwise(pl.col(c)).alias(c)
                 for c in ["as_check_in__tod", "as_check_out__tod"]
             ]
         )
