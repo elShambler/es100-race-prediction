@@ -195,7 +195,6 @@ def _payload(html: str) -> dict:
 
 def test_dashboard_has_planner_and_course():
     html = DASHBOARD.read_text(encoding="utf-8")
-    assert "leaflet@1.9.4" in html, "Leaflet CDN reference missing"
     d = _payload(html)
     assert "planner" in d and "course" in d
     assert len(d["planner"]["stations"]) == 16, "expected 16 selectable stations"
@@ -204,6 +203,33 @@ def test_dashboard_has_planner_and_course():
     n = len(d["course"]["route"])
     assert all(0 <= st[5] < n for st in d["course"]["stations"])
     assert d["course"]["stations"][-1][5] == n - 1, "finish must index route end"
+
+
+def test_dashboard_is_fully_offline():
+    """No external scripts/styles/fonts/tiles — the page must work with no
+    network (crew uses it at the race). The SVG course map replaced Leaflet."""
+    html = DASHBOARD.read_text(encoding="utf-8")
+    assert "unpkg.com" not in html and "leaflet" not in html.lower()
+    assert "tile.openstreetmap" not in html
+    assert 'id="card-map"' in html and "buildMapProjection" in html
+
+
+def test_dashboard_has_pacing_planner():
+    """The offline race-day pacing card and its goal input must be present."""
+    html = DASHBOARD.read_text(encoding="utf-8")
+    assert 'id="card-pacing"' in html and 'id="paceGoal"' in html
+    assert "renderPacing" in html
+
+
+def test_planner_avg_is_speed_ratio(ratio):
+    """The reporting payload flips the pace ratio to a speed ratio (>1 = faster),
+    so the per-station average means sit just above 1.0 — the mirror of the
+    pace-ratio dataset median (~0.93)."""
+    html = DASHBOARD.read_text(encoding="utf-8")
+    d = _payload(html)
+    means = sorted(v[0] for v in d["planner"]["avg"].values())
+    med = means[len(means) // 2]
+    assert 1.0 <= med <= 1.25, f"planner avg speed-ratio median {med:.3f} not >1"
 
 
 def test_dashboard_json_is_escaped():
