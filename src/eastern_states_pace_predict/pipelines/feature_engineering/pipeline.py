@@ -1,8 +1,8 @@
 from kedro.pipeline import Pipeline, node, pipeline
 
 from .nodes import (
-    compute_cumulative_ratio,
     compute_interval_features,
+    compute_interval_ratio,
     impute_missing_times,
     train_stoppage_model,
 )
@@ -24,24 +24,24 @@ def create_pipeline(**kwargs) -> Pipeline:
             node(
                 func=impute_missing_times,
                 inputs=[
-                    "es_splits_2021_2025_processed",
+                    "es_splits_all",
                     "es_stoppage_model",
                     "params:stoppage_model",
                 ],
-                outputs="es_splits_2021_2025_imputed",
+                outputs="es_splits_imputed",
                 name="impute__missing_times",
             ),
             node(
                 func=compute_interval_features,
-                inputs="es_splits_2021_2025_imputed",
+                inputs="es_splits_imputed",
                 outputs="es_interval_features",
                 name="features__interval_pace",
             ),
             node(
-                func=compute_cumulative_ratio,
-                inputs=["es_splits_all", "es_asinfo_historical", "es_station_xwalk"],
-                outputs="es_cumulative_ratio",
-                name="features__cumulative_ratio",
+                func=compute_interval_ratio,
+                inputs=["es_interval_features", "es_station_xwalk"],
+                outputs="es_interval_ratio",
+                name="features__interval_ratio",
             ),
         ]
     )
