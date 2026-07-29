@@ -129,6 +129,36 @@ es_stoppage_model_metrics_tracked:
     kedro-viz:
       layer: models
 
+# SCAFFOLD: per-station arrival-time regressor (predicts elapsed arrival hours
+# at each aid station). Same MlflowArtifact pattern as the stoppage model.
+es_arrival_model:
+  type: kedro_mlflow.io.artifacts.MlflowArtifactDataset
+  dataset:
+    type: pickle.PickleDataset
+    filepath: data/06_models/es_arrival_model.pkl
+  metadata:
+    kedro-viz:
+      layer: models
+
+# Holdout-validation metrics for the arrival model (MAE vs distance-proportional
+# naive baseline), kept locally and attached to the MLflow run as JSON.
+es_arrival_model_metrics:
+  type: kedro_mlflow.io.artifacts.MlflowArtifactDataset
+  dataset:
+    type: json.JSONDataset
+    filepath: data/06_models/es_arrival_model_metrics.json
+  metadata:
+    kedro-viz:
+      layer: models
+
+# Numeric arrival-model metrics logged to the MLflow run's metrics panel
+es_arrival_model_metrics_tracked:
+  type: kedro_mlflow.io.metrics.MlflowMetricsHistoryDataset
+  prefix: arrival
+  metadata:
+    kedro-viz:
+      layer: models
+
 # All-years splits with missing check-in/check-out elapsed times imputed
 # (2016-2017 has no recorded check-outs at all, so every departure there is
 # predicted by the stoppage model).
@@ -147,6 +177,15 @@ es_splits_imputed:
 es_as_dashboard:
   type: text.TextDataset
   filepath: data/08_reporting/es_as_dashboard.html
+  metadata:
+    kedro-viz:
+      layer: reporting
+
+# Standalone, mobile-first race-day pacing planner (self-contained, offline).
+# Carries a base64-embedded .xlsx download with the same live pacing formulas.
+es_pacing_planner:
+  type: text.TextDataset
+  filepath: data/08_reporting/es_pacing_planner.html
   metadata:
     kedro-viz:
       layer: reporting
