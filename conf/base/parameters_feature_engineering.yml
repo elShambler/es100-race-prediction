@@ -26,3 +26,36 @@ stoppage_model:
   prediction:
     min_stoppage_min: 0.0
     max_stoppage_min: 120.0
+
+# SCAFFOLD: per-station arrival-time model (predicts a runner's elapsed arrival
+# hours at each aid station). A baseline to iterate on — see the leakage TODO in
+# _arrival_features() before trusting it for live pacing.
+arrival_model:
+  # Feature columns built by _arrival_features() (reuses _stoppage_features).
+  # NOTE elapsed_hrs is the TARGET here, so it is intentionally absent. The two
+  # *result* features below are convenient but leak final performance — replace
+  # them with race-day-available signals as the model matures.
+  features:
+    - as_num
+    - as_dist_from_start
+    - overall_pace_min_per_mi   # TODO: leaks final pace — swap for early-split pace
+    - age
+    - gender_code
+    - is_finisher               # TODO: unknown mid-race
+    - overall_rank_pct          # TODO: unknown mid-race
+
+  model:
+    max_iter: 300
+    learning_rate: 0.05
+    max_depth: 6
+    random_state: 42
+
+  validation:
+    strategy: year_holdout   # "year_holdout" or "random"
+    holdout_year: 2023
+    test_size: 0.2           # only used when strategy == "random"
+    random_state: 42
+
+  prediction:
+    min_elapsed_hrs: 0.0
+    max_elapsed_hrs: 40.0
