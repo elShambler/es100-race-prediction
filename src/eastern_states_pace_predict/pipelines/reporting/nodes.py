@@ -1,5 +1,7 @@
+import base64
 import json
 import logging
+from io import BytesIO
 from pathlib import Path
 
 import matplotlib
@@ -453,6 +455,284 @@ def build_as_dashboard(
     logger.info(
         "Dashboard built: %d years, %d bytes", len(payload["by_year"]), len(html)
     )
+    return html
+
+
+def _interp_by_mile(miles: list, arr: list) -> None:
+    """Fill None entries of arr in place by linear interpolation on mile.
+
+    Interior gaps interpolate between the nearest filled neighbors; leading /
+    trailing gaps scale the nearest filled value by the mile ratio, so a station
+    no cohort ever recorded still gets a distance-sensible arrival estimate.
+    """
+    n = len(arr)
+    known = [i for i in range(n) if arr[i] is not None]
+    if not known:
+        for i in range(n):
+            arr[i] = miles[i] or 0.0
+        return
+    first, lastk = known[0], known[-1]
+    for i in range(first):
+        arr[i] = arr[first] * (miles[i] / miles[first]) if miles[first] else arr[first]
+    for i in range(lastk + 1, n):
+        arr[i] = arr[lastk] * (miles[i] / miles[lastk]) if miles[lastk] else arr[lastk]
+    for a, b in zip(known, known[1:]):
+        if b - a > 1:
+            span = miles[b] - miles[a]
+            for i in range(a + 1, b):
+                t = (miles[i] - miles[a]) / span if span else 0.0
+                arr[i] = arr[a] + t * (arr[b] - arr[a])
+
+
+def _monotone(seq: list) -> list:
+    """Running max — arrivals never move backward as distance increases."""
+    out, m = [], float("-inf")
+    for x in seq:
+        m = max(m, x)
+        out.append(m)
+    return out
+
+
+def _planner_eta_table(planner: dict) -> dict:
+    """Per finish-hour-cohort arrival-fraction table for the pacing planner.
+
+    For each finish-hour block b in [fhr_min, fhr_max] and each 2026 station
+    (sorted by mile), take that cohort's **median arrival elapsed hours** — the
+    nearest block when b itself never recorded the station (nearest-neighbor, not
+    a global average) — plus p25/p75, and divide by the block's finish-station
+    median so every value is a *fraction of the finish*. The client and the
+    workbook multiply these by the user's goal, so the predicted finish equals
+    the goal exactly and each ETA carries the cohort's real arrival shape
+    (aid-station stoppage included, unlike a moving-pace model). Stations no
+    cohort ever recorded are interpolated by mile. Returns
+    {str(block): {"p25": [...], "p50": [...], "p75": [...]}} aligned to the
+    mile-sorted stations.
+    """
+    stations = sorted(planner["stations"], key=lambda r: r[2])
+    sids = [int(s[0]) for s in stations]
+    miles = [s[2] for s in stations]
+    cohort = planner["arrivals"]["cohort"]  # {sid: {block: [p25, p50, p75, n]}}
+    fmin, fmax = int(planner["fhr_min"]), int(planner["fhr_max"])
+
+    avail = {
+        sid: sorted((int(b), v[:3]) for b, v in cohort.get(str(sid), {}).items())
+        for sid in sids
+    }
+
+    def nearest(sid: int, b: int):
+        lst = avail[sid]
+        return min(lst, key=lambda kv: (abs(kv[0] - b), kv[0]))[1] if lst else None
+
+    eta = {}
+    for b in range(fmin, fmax + 1):
+        cols = {q: [None] * len(sids) for q in ("p25", "p50", "p75")}
+        for i, sid in enumerate(sids):
+            v = nearest(sid, b)
+            if v is not None:
+                cols["p25"][i], cols["p50"][i], cols["p75"][i] = v
+        for q in cols:
+            _interp_by_mile(miles, cols[q])
+        mfin = cols["p50"][-1] or 1.0
+        # Cap at the finish (1.0) so nearest-neighbour mixing across cohorts can't
+        # place a median arrival "after" the finish; the finish stays exactly 1.0
+        # and the predicted finish lands on the goal.
+        f50 = _monotone([min(x / mfin, 1.0) for x in cols["p50"]])
+        f25 = [min(x / mfin, m) for x, m in zip(cols["p25"], f50)]
+        f75 = [max(x / mfin, m) for x, m in zip(cols["p75"], f50)]
+        eta[str(b)] = {
+            "p25": [round(x, 4) for x in f25],
+            "p50": [round(x, 4) for x in f50],
+            "p75": [round(x, 4) for x in f75],
+        }
+    return eta
+
+
+def build_planner_workbook(  # noqa: PLR0915
+    stations: list, eta: dict, fmin: int, fmax: int
+) -> bytes:
+    """A self-contained .xlsx pacing planner with the same live logic as the page.
+
+    Enter a goal finish (hours) in Plan!B1 and every predicted arrival recomputes;
+    type actual arrivals (elapsed hours) in the Actual column and the remaining
+    stations + projected finish re-project from the furthest actual — exactly like
+    renderPacing / recomputePacing in planner_template.html. Predicted arrivals are
+    the finish-cohort's arrival fractions (baked into a hidden Data sheet, keyed by
+    station row × finish-hour block) times the goal, so no macros are needed and it
+    works offline. Returns the workbook as bytes.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter as col
+
+    stations = sorted(stations, key=lambda r: r[2])
+    n = len(stations)
+    total = stations[-1][2]
+    blocks = list(range(fmin, fmax + 1))
+    nb = len(blocks)
+
+    wb = Workbook()
+
+    # ---- hidden Data sheet: arrival-fraction matrices (p50/p25/p75) ----
+    data = wb.active
+    data.title = "Data"
+    C50, C25, C75 = 4, 4 + nb + 1, 4 + 2 * (nb + 1)  # A name | B mile | (C gap) | …
+    for c0 in (C50, C25, C75):  # block-number header per region
+        for j, b in enumerate(blocks):
+            data.cell(row=1, column=c0 + j, value=b)
+    for i, (_sid, name, mi) in enumerate(stations):
+        r = i + 2
+        data.cell(row=r, column=1, value=name)
+        data.cell(row=r, column=2, value=round(mi, 2))
+        for j, b in enumerate(blocks):
+            eb = eta[str(b)]
+            data.cell(row=r, column=C50 + j, value=eb["p50"][i])
+            data.cell(row=r, column=C25 + j, value=eb["p25"][i])
+            data.cell(row=r, column=C75 + j, value=eb["p75"][i])
+    data.sheet_state = "hidden"
+
+    a50, z50 = col(C50), col(C50 + nb - 1)
+    a25, z25 = col(C25), col(C25 + nb - 1)
+    a75, z75 = col(C75), col(C75 + nb - 1)
+
+    # ---- Plan sheet: user-facing, all formulas ----
+    plan = wb.create_sheet("Plan")
+    first, last = 5, n + 4  # data rows
+    goal = "$B$1"
+    # round the goal to a finish-hour block, clamped into the cohort range.
+    blk = f"MEDIAN({fmin},ROUND({goal},0),{fmax})"
+
+    def clk(expr: str) -> str:  # elapsed-hours expr -> "hh:mm" (+1 next day)
+        return (
+            f'TEXT(MOD((5+({expr}))/24,1),"hh:mm")&'
+            f'IF(INT((5+({expr}))/24)>=1," +1","")'
+        )
+
+    plan["A1"] = "Goal finish (hours)"
+    plan["A1"].font = Font(bold=True)
+    plan["B1"] = 28
+    plan["B1"].number_format = "0.0"
+    plan["B1"].fill = PatternFill("solid", fgColor="FFF3D6")
+    plan["A2"] = "Projected finish"
+    plan["A2"].font = Font(bold=True)
+    plan["B2"] = f"=IF($L$1>0,$L$5+({goal}-$L$4)*$L$6,{goal})"
+    plan["B2"].number_format = "0.00"
+    plan["C2"] = "=" + clk("$B$2")
+    plan["D2"] = "min vs goal"
+    plan["E2"] = f"=($B$2-{goal})*60"
+    plan["E2"].number_format = "+0;-0"
+
+    headers = [
+        "Aid station",
+        "Mile",
+        "Predicted (hrs)",
+        "Predicted",
+        "Typical range",
+        "Actual (elapsed hrs)",
+        "Revised (hrs)",
+        "Revised",
+    ]
+    for c, htxt in enumerate(headers, start=1):
+        cell = plan.cell(row=4, column=c, value=htxt)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="right" if c > 1 else "left")
+
+    for i, (_sid, name, mi) in enumerate(stations):
+        r, dr = first + i, i + 2
+        row50, hdr50 = f"Data!${a50}{dr}:${z50}{dr}", f"Data!${a50}$1:${z50}$1"
+        row25, hdr25 = f"Data!${a25}{dr}:${z25}{dr}", f"Data!${a25}$1:${z25}$1"
+        row75, hdr75 = f"Data!${a75}{dr}:${z75}{dr}", f"Data!${a75}$1:${z75}$1"
+        v50 = f"INDEX({row50},MATCH({blk},{hdr50},0))*{goal}"
+        v25 = f"INDEX({row25},MATCH({blk},{hdr25},0))*{goal}"
+        v75 = f"INDEX({row75},MATCH({blk},{hdr75},0))*{goal}"
+
+        plan.cell(row=r, column=1, value=name)
+        plan.cell(row=r, column=2, value=round(mi, 2))
+        # Predicted arrival hrs = nearest finish-cohort arrival fraction * goal.
+        plan.cell(
+            row=r, column=3, value=f"=IFERROR({v50},{goal}*B{r}/{total})"
+        ).number_format = "0.00"
+        plan.cell(row=r, column=4, value="=" + clk(f"C{r}"))
+        plan.cell(row=r, column=5, value=f'=IFERROR({clk(v25)}&" – "&{clk(v75)},"—")')
+        act = plan.cell(row=r, column=6)  # input
+        act.fill = PatternFill("solid", fgColor="FFF3D6")
+        act.number_format = "0.00"
+        # Revised hrs: actual if entered, else re-project from the furthest actual.
+        plan.cell(
+            row=r,
+            column=7,
+            value=f"=IF(ISNUMBER(F{r}),F{r},IF($L$1>0,$L$5+(C{r}-$L$4)*$L$6,C{r}))",
+        ).number_format = "0.00"
+        plan.cell(row=r, column=8, value="=" + clk(f"G{r}"))
+        # helper J: mile where an actual is present (for the anchor).
+        plan.cell(row=r, column=10, value=f'=IF(ISNUMBER(F{r}),B{r},"")')
+
+    # Anchor helpers (furthest station with an actual) — column L, hidden.
+    Br = f"$B${first}:$B${last}"
+    Cr = f"$C${first}:$C${last}"
+    Fr = f"$F${first}:$F${last}"
+    Jr = f"$J${first}:$J${last}"
+    plan["K1"], plan["L1"] = "anchor mile", f"=MAX({Jr})"
+    plan["K3"], plan["L3"] = "anchor pos", f"=IFERROR(MATCH($L$1,{Br},0),0)"
+    plan["K4"], plan["L4"] = "anchor model", f"=IF($L$1>0,INDEX({Cr},$L$3),0)"
+    plan["K5"], plan["L5"] = "anchor actual", f"=IF($L$1>0,INDEX({Fr},$L$3),0)"
+    plan["K6"], plan["L6"] = "pace factor", "=IF($L$1>0,$L$5/MAX(0.1,$L$4),1)"
+    for cl in ("I", "J", "K", "L"):
+        plan.column_dimensions[cl].hidden = True
+    for cl, w in {"A": 22, "E": 18, "F": 18, "D": 11, "H": 11}.items():
+        plan.column_dimensions[cl].width = w
+    plan.freeze_panes = "A5"
+    plan.sheet_view.showGridLines = True
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def build_pacing_planner(
+    ratio: pl.DataFrame,
+    splits: pl.DataFrame,
+    xwalk: pl.DataFrame,
+    stations: pl.DataFrame,
+    params: dict,
+) -> str:
+    """Render the standalone, mobile-first race-day pacing planner page.
+
+    Reuses _planner_payload, derives the finish-cohort arrival-fraction table
+    (_planner_eta_table), and injects a slimmed planner-only JSON plus a
+    base64-embedded .xlsx (same live logic, for offline download) into
+    planner_template.html.
+
+    Inputs: es_interval_ratio, es_splits_all, es_station_xwalk,
+        es_course_stations, params:reporting
+    Outputs: es_pacing_planner (text HTML, data/08_reporting)
+    """
+    planner = _planner_payload(ratio, splits, xwalk, stations, params)
+    eta = _planner_eta_table(planner)
+    fmin, fmax = int(planner["fhr_min"]), int(planner["fhr_max"])
+    # The client planner reads only stations + the arrival-fraction table; drop
+    # the scatter points, histogram, and raw trend/avg to keep the page lean.
+    slim = {
+        "planner": {
+            "stations": planner["stations"],
+            "eta": eta,
+            "fhr_min": fmin,
+            "fhr_max": fmax,
+        }
+    }
+
+    template = (Path(__file__).parent / "planner_template.html").read_text(
+        encoding="utf-8"
+    )
+    marker = "/*__DATA__*/null"
+    if marker not in template or "__XLSX_B64__" not in template:
+        raise ValueError("planner template is missing a required marker")
+    blob = json.dumps(slim, separators=(",", ":")).replace("</", "<\\/")
+    html = template.replace(marker, blob)
+
+    workbook = build_planner_workbook(planner["stations"], eta, fmin, fmax)
+    xlsx_b64 = base64.b64encode(workbook).decode("ascii")
+    html = html.replace("__XLSX_B64__", xlsx_b64)
+    logger.info("Pacing planner built: %d bytes (xlsx %d B)", len(html), len(xlsx_b64))
     return html
 
 

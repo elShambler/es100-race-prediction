@@ -1,6 +1,6 @@
 from kedro.pipeline import Pipeline, node, pipeline
 
-from .nodes import build_as_dashboard, plot_blog_interval_ratio
+from .nodes import build_as_dashboard, build_pacing_planner, plot_blog_interval_ratio
 
 
 def create_pipeline(**kwargs) -> Pipeline:
@@ -19,6 +19,18 @@ def create_pipeline(**kwargs) -> Pipeline:
                 ],
                 outputs="es_as_dashboard",
                 name="build__as_dashboard",
+            ),
+            node(
+                func=build_pacing_planner,
+                inputs=[
+                    "es_interval_ratio",
+                    "es_splits_all",
+                    "es_station_xwalk",
+                    "es_course_stations",
+                    "params:reporting",
+                ],
+                outputs="es_pacing_planner",
+                name="build__pacing_planner",
             ),
             node(
                 func=plot_blog_interval_ratio,
