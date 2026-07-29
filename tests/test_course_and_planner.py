@@ -24,7 +24,9 @@ XWALK = ROOT / "data/02_intermediate/es_station_xwalk.csv"
 RATIO = ROOT / "data/04_feature/es_interval_ratio.csv"
 ALL_SPLITS = ROOT / "data/02_intermediate/es_splits_all.csv"
 DASHBOARD = ROOT / "data/08_reporting/es_as_dashboard.html"
+PLANNER = ROOT / "data/08_reporting/es_pacing_planner.html"
 BLOG_DIR = ROOT / "data/08_reporting/blog_figures"
+ARRIVAL_METRICS = ROOT / "data/06_models/es_arrival_model_metrics.json"
 
 # Official course length used to scale GPX miles (parameters_course.yml).
 OFFICIAL_FINISH_MI = 103.1
@@ -214,11 +216,14 @@ def test_dashboard_is_fully_offline():
     assert 'id="card-map"' in html and "buildMapProjection" in html
 
 
-def test_dashboard_has_pacing_planner():
-    """The offline race-day pacing card and its goal input must be present."""
+def test_pacing_planner_moved_out_of_dashboard():
+    """The race-day pacing planner now lives in its own page — the dashboard must
+    no longer carry that card or its JS (it stays the data-viz/explorer)."""
     html = DASHBOARD.read_text(encoding="utf-8")
-    assert 'id="card-pacing"' in html and 'id="paceGoal"' in html
-    assert "renderPacing" in html
+    assert 'id="card-pacing"' not in html
+    assert "renderPacing" not in html and 'id="paceGoal"' not in html
+    # the exploratory arrival-distribution + map cards remain
+    assert 'id="card-arrival-window"' in html and 'id="card-map"' in html
 
 
 def test_planner_avg_is_speed_ratio(ratio):
@@ -244,6 +249,68 @@ def test_dashboard_json_is_escaped():
 
 def test_dashboard_size_bounded():
     assert DASHBOARD.stat().st_size < 1_000_000, "dashboard HTML exceeded 1 MB"
+
+
+def test_pacing_planner_page_is_self_contained():
+    """The standalone planner is a mobile-first, fully offline crew tool."""
+    html = PLANNER.read_text(encoding="utf-8")
+    assert 'id="card-pacing"' in html and 'id="paceGoal"' in html
+    assert "renderPacing" in html and 'id="xlsxDownload"' in html
+    assert "max-width: 640px" in html, "missing the mobile-first breakpoint"
+    for bad in ("http://", "https://", "unpkg.com", "leaflet", "tile.openstreetmap"):
+        assert bad not in html.lower(), f"planner not offline: found {bad}"
+    d = _payload(html)
+    assert set(d["planner"]) >= {"stations", "eta", "fhr_min", "fhr_max"}
+    assert len(d["planner"]["stations"]) == 16
+    # arrival-fraction table: every cohort's finish station is fraction 1.0
+    for block in d["planner"]["eta"].values():
+        assert block["p50"][-1] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_pacing_planner_actual_input_accepts_bare_digits():
+    """Mobile numeric keypads have no colon key, so a bare 3-4 digit entry
+    (e.g. 930) is turned into a clock time (9:30) before parsing."""
+    html = PLANNER.read_text(encoding="utf-8")
+    assert r"/^\d{3,4}$/.test(t)" in html, "auto-colon rule for bare digits missing"
+    assert "9:30 or 930" in html, "placeholder hint for the digit format missing"
+
+
+def test_pacing_planner_json_is_escaped():
+    html = PLANNER.read_text(encoding="utf-8")
+    blob = html[html.index("const DATA =") : html.index("</script>")]
+    assert "</" not in blob, "unescaped </ inside the embedded JSON breaks the script"
+
+
+def test_pacing_planner_embeds_working_xlsx():
+    """The Download-Excel button carries a real .xlsx (base64) with live formulas
+    — the same goal→predicted→re-project logic, so it recomputes in Excel."""
+    import base64
+    from io import BytesIO
+
+    import openpyxl
+
+    html = PLANNER.read_text(encoding="utf-8")
+    m = re.search(r'XLSX_B64 = "([A-Za-z0-9+/=]+)"', html)
+    assert m, "embedded base64 workbook not found"
+    wb = openpyxl.load_workbook(BytesIO(base64.b64decode(m.group(1))))
+    assert {"Plan", "Data"} <= set(wb.sheetnames)
+    plan = wb["Plan"]
+    assert plan["B1"].value is not None, "goal-finish input cell is empty"
+    formulas = "\n".join(
+        str(c.value) for row in plan.iter_rows() for c in row if c.value
+    )
+    # the predicted-arrival (fraction × goal) + re-projection formulas must be present
+    assert "MATCH(MEDIAN(" in formulas, "cohort-block lookup formula missing"
+    assert ")*$B$1" in formulas, "arrival-fraction × goal formula missing"
+    assert "$L$5+(C" in formulas, "actual re-projection formula missing"
+
+
+def test_arrival_model_metrics():
+    """The scaffolded arrival-time model trains and beats the naive baseline."""
+    m = json.loads(ARRIVAL_METRICS.read_text())
+    assert {"mae_model_hrs", "mae_naive_dist_hrs", "n_fit", "n_val"} <= set(m)
+    assert m["n_fit"] > 0 and m["n_val"] > 0
+    assert m["mae_model_hrs"] < m["mae_naive_dist_hrs"], "model no better than naive"
 
 
 def test_blog_figures_exist():
