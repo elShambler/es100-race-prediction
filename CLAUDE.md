@@ -63,7 +63,7 @@ uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
 | `intermediate` | `data/02_intermediate/` | Node outputs, regenerable |
 | `feature` | `data/04_feature/` | Imputed splits and interval-pace features |
 | `models` | `data/06_models/` | Pickled stoppage model + validation metrics |
-| `reporting` | `data/08_reporting/` | Plotly charts, HTML dashboard, static blog figures (PNG/SVG) |
+| `reporting` | `data/08_reporting/` | Plotly charts, HTML dashboard, standalone mobile pacing planner (with embedded `.xlsx`), static blog figures (PNG/SVG) |
 
 Intermediate datasets that need Kedro Viz table previews use `PolarsPreviewCSVDataset` (defined in `src/.../datasets/polars_preview_csv_dataset.py`) instead of bare `polars.CSVDataset`. Raw datasets load with `infer_schema_length: 0` plus `schema_overrides` when column types need to be pinned.
 
@@ -144,6 +144,8 @@ feature run on **all years** via `es_splits_all`:
 ```
 train__stoppage_model    # HistGradientBoostingRegressor for minutes spent in an AS
     → es_stoppage_model (pickle) + es_stoppage_model_metrics (JSON: MAE vs naive baseline)
+train__arrival_model     # SCAFFOLD: HistGradientBoostingRegressor for elapsed ARRIVAL hrs per AS
+    → es_arrival_model (pickle) + es_arrival_model_metrics (JSON: MAE vs distance-naive baseline)
 impute__missing_times    # fills missing check-in/check-out elapsed hours (es_splits_all in)
     → es_splits_imputed (04_feature, all years)
 features__interval_pace  # interval pace, overall pace, pace ratio per runner×AS
@@ -160,6 +162,20 @@ compute a **moving** interval pace (previous departure → this arrival) for tho
 years. Consequence: the per-year dashboard cards now cover 2016-2025, but the
 observed-stoppage card is suppressed for 2016-2017 (0% observed coverage — every
 stop is predicted, so the coverage guard hides it, honestly).
+
+**`train__arrival_model`** is a **scaffold**, not a finished model — a working
+baseline for predicting a runner's elapsed **arrival** hours at each aid station
+(the true "predict times" gap; the stoppage model only predicts in-station
+minutes). It reuses `_stoppage_features` (so `elapsed_hrs` is the **target**, not
+a feature) and mirrors the stoppage model exactly: `year_holdout` validation
+against a distance-proportional naive baseline, refit on all rows, MLflow-logged
+(`params:arrival_model`, prefix `arrival`). The starter feature list still
+carries `overall_pace_min_per_mi` / `overall_rank_pct` / `is_finisher`, which
+**leak final performance** (a crew doesn't know them mid-race) — see the
+`TODO(scaffold)` in `_arrival_features`; swap them for race-day-available signals
+(early-split pace, crew-entered goal, prior-year finish) before trusting it. Its
+per-station predictions could later replace the heuristic `trend`/`avg` speed
+ratios that `reporting._planner_payload` feeds the client pacing planner.
 
 **`features__interval_ratio`** (inputs `es_interval_features`, `es_station_xwalk`)
 is the shared artifact behind both the static blog figure and the dashboard
@@ -229,15 +245,41 @@ caps at the 95th percentile of non-zero cells.
     `_speed_ratio_expr` (**>1 = faster**), axis "Speed Relative To Final (higher
     means faster segment)". `planner.avg` / `planner.trend` means are in these
     ratio units (the pacing planner reads them back as speed).
-- **Race-day pacing planner** (`#card-pacing`, `renderPacing`/`recomputePacing`
-  in `template.html`, no Python — pure client-side over `DATA.planner`): a crew
-  member enters a goal finish; the plan distributes it across legs by each leg's
-  typical speed (`trend`/`avg` speed ratios, leg time ∝ distance ÷ speed,
-  normalized so the finish equals the goal) and shows a per-station predicted
-  arrival + the goal-cohort p25–p75 "typical range" (`arrivals.cohort`). Typing an
-  actual arrival re-projects in place: the furthest actual anchors a pace factor
-  `f = actual/model`, rescaling every downstream ETA and the finish. Fully
-  offline, no new pipeline outputs.
+- **Race-day pacing planner** — its own **standalone, mobile-first page**
+  (`es_pacing_planner.html`), no longer part of the dashboard. Built by
+  `build__pacing_planner` (reporting `nodes.py`), which reuses `_planner_payload`,
+  derives a **finish-cohort arrival-fraction table** (`_planner_eta_table`), and
+  injects a **slimmed planner-only** `DATA` (`{stations, eta, fhr_min, fhr_max}`
+  only) into `planner_template.html` (a sibling of `template.html` reusing the
+  same base64 font + theme CSS and the `h`/`fmtTod`/`renderPacing`/`recomputePacing`
+  JS), plus a **base64 `.xlsx`** at the `__XLSX_B64__` marker.
+  **ETA method (cohort arrival times, not moving-speed ratios):**
+  `_planner_eta_table` takes, per finish-hour block and station, that cohort's
+  **median arrival elapsed hours** (nearest block when the exact one has no data —
+  nearest-neighbour, **not** a global average) ÷ the block's finish median, so each
+  value is a *fraction of the finish*, capped at 1.0 and monotone. The client does
+  `ETA_i = eta[clamp(round(goal))].p50[i] × goal`, so the predicted **finish lands
+  on the goal exactly** and every ETA carries the cohort's real arrival shape
+  (aid-station stoppage included). We deliberately did **not** use the
+  moving-speed-ratio reconstruction (leg speed = ratio × finish mph, summed): it
+  undershoots the goal by ~1–3 h because moving-pace ratios exclude stoppage.
+  Typical range = that cohort's p25/p75 fractions × goal. Typing an actual arrival
+  re-projects in place: the furthest actual anchors `f = actual/model`, rescaling
+  every downstream ETA and the finish. **Actual-arrival input:** a bare 3–4 digit
+  entry is read as a clock time with an implied colon (`930`→9:30, `1430`→14:30) so
+  the mobile numeric keypad needs no colon key; `hh:mm` still works. The 6-column
+  table restacks into labeled card blocks under a `max-width:640px` breakpoint
+  (`data-label` `::before` labels). Fully offline.
+- **Downloadable Excel planner** (`build_planner_workbook`, reporting `nodes.py`,
+  openpyxl): a self-contained `.xlsx` with **live formulas** that reproduce the
+  same cohort-arrival ETA math exactly (verified cell-for-cell against the JS with
+  the `formulas` engine, incl. the actual re-projection). A hidden `Data` sheet
+  holds the p50/p25/p75 arrival-fraction matrices (station row × finish-hour block);
+  the `Plan` sheet's formulas do `INDEX`/`MATCH` on `MEDIAN(fmin,ROUND(goal),fmax)`
+  (clamp goal into the cohort range) × goal for the prediction, and the
+  furthest-actual anchor re-projection (`$L$*` helper cells). It's base64-embedded
+  in the planner page and downloaded via a Blob (no JS library, works offline).
+  Actual-arrival input here is elapsed hours (Excel has a full keyboard).
 - Size control (`conf/base/parameters_reporting.yml`): the scatter is
   stratified-sampled to `max_scatter_points` (aggregates always from full data);
   the route is downsampled to `max_route_points` keeping station vertices, coords
