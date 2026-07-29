@@ -155,6 +155,97 @@ def train_stoppage_model(
     return model, metrics, metrics_tracked
 
 
+def _arrival_features(splits: pl.DataFrame) -> pl.DataFrame:
+    """Feature columns + the per-station arrival target (elapsed HOURS).
+
+    Reuses the stoppage feature builder (same runner/course columns) and exposes
+    `elapsed_hrs` — a runner's arrival time at the station — as the target. Note
+    `elapsed_hrs` is therefore NOT a feature here (it is a feature for the
+    stoppage model, where the target is stoppage minutes instead).
+
+    TODO(scaffold): the starter feature list includes overall_pace_min_per_mi and
+    overall_rank_pct, which encode the runner's *final* result and would leak at
+    inference time (a crew doesn't know them mid-race). Replace them with signals
+    available on race day — pace through the first K stations, a crew-entered goal
+    finish, prior-year finish — before trusting predictions for live pacing.
+    """
+    return _stoppage_features(splits)
+
+
+def train_arrival_model(
+    splits: pl.DataFrame, params: dict
+) -> tuple[HistGradientBoostingRegressor, dict, dict]:
+    """SCAFFOLD: regressor for a runner's elapsed arrival time (hours) per AS.
+
+    A working baseline to iterate on — mirrors train_stoppage_model (year-holdout
+    validation against a distance-proportional naive baseline, then refit on all
+    rows). Its per-station predictions could later replace the heuristic trend/avg
+    speed ratios that reporting._planner_payload feeds the client pacing planner.
+
+    This is intentionally a starting point, not a finished model: see the
+    leakage TODO in _arrival_features before relying on it.
+
+    Inputs: es_splits_2021_2025_processed, params:arrival_model
+    Outputs: es_arrival_model, es_arrival_model_metrics,
+             es_arrival_model_metrics_tracked
+    """
+    features = params["features"]
+    fdf = _arrival_features(splits)
+
+    train_df = fdf.filter(
+        pl.col("elapsed_hrs").is_not_null()
+        & (pl.col("elapsed_hrs") >= 0)
+        & (pl.col("as_dist_from_start") > 0)
+    )
+
+    val_cfg = params["validation"]
+    if val_cfg["strategy"] == "year_holdout":
+        holdout = val_cfg["holdout_year"]
+        fit_df = train_df.filter(pl.col("year") != holdout)
+        val_df = train_df.filter(pl.col("year") == holdout)
+    else:
+        idx_train, idx_val = train_test_split(
+            range(train_df.height),
+            test_size=val_cfg["test_size"],
+            random_state=val_cfg["random_state"],
+        )
+        fit_df = train_df[list(idx_train)]
+        val_df = train_df[list(idx_val)]
+
+    model = HistGradientBoostingRegressor(**params["model"])
+    model.fit(_to_matrix(fit_df, features), fit_df["elapsed_hrs"].to_numpy())
+    val_pred = model.predict(_to_matrix(val_df, features))
+
+    # Naive baseline: constant field pace — elapsed ∝ distance at the median
+    # hours-per-mile of the fit split.
+    med_pace = fit_df.select(
+        (pl.col("elapsed_hrs") / pl.col("as_dist_from_start")).median().alias("m")
+    )["m"][0]
+    naive_pred = (val_df["as_dist_from_start"] * med_pace).to_numpy()
+
+    y_val = val_df["elapsed_hrs"].to_numpy()
+    metrics = {
+        "strategy": val_cfg["strategy"],
+        "holdout_year": val_cfg.get("holdout_year"),
+        "n_fit": fit_df.height,
+        "n_val": val_df.height,
+        "mae_model_hrs": float(mean_absolute_error(y_val, val_pred)),
+        "mae_naive_dist_hrs": float(mean_absolute_error(y_val, naive_pred)),
+        "median_pace_hr_per_mi": float(med_pace),
+    }
+    logger.info("Arrival model validation: %s", metrics)
+
+    # Refit on everything so the shipped model uses all observed arrivals.
+    model.fit(_to_matrix(train_df, features), train_df["elapsed_hrs"].to_numpy())
+
+    metrics_tracked = {
+        k: {"value": float(v), "step": 0}
+        for k, v in metrics.items()
+        if isinstance(v, int | float) and k != "holdout_year"
+    }
+    return model, metrics, metrics_tracked
+
+
 def impute_missing_times(
     splits: pl.DataFrame,
     model: HistGradientBoostingRegressor,

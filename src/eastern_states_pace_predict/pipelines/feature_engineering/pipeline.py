@@ -4,6 +4,7 @@ from .nodes import (
     compute_interval_features,
     compute_interval_ratio,
     impute_missing_times,
+    train_arrival_model,
     train_stoppage_model,
 )
 
@@ -20,6 +21,16 @@ def create_pipeline(**kwargs) -> Pipeline:
                     "es_stoppage_model_metrics_tracked",
                 ],
                 name="train__stoppage_model",
+            ),
+            node(
+                func=train_arrival_model,
+                inputs=["es_splits_2021_2025_processed", "params:arrival_model"],
+                outputs=[
+                    "es_arrival_model",
+                    "es_arrival_model_metrics",
+                    "es_arrival_model_metrics_tracked",
+                ],
+                name="train__arrival_model",
             ),
             node(
                 func=impute_missing_times,
